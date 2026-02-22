@@ -1,0 +1,112 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://observerprotocol.org/spec/v0.1/schema.json",
+  "title": "ARP Event",
+  "description": "Agent Reporting Protocol v0.1 — event schema for verified AI agent economic activity",
+  "type": "object",
+  "required": ["event_id", "event_type", "arp_version", "agent_id", "protocol", "time_window", "verified", "submitted_at"],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "description": "Unique event identifier. Format: evt_{agent_prefix}_{sequence}",
+      "pattern": "^evt_[a-zA-Z0-9_-]+_[0-9]+$"
+    },
+    "event_type": {
+      "type": "string",
+      "description": "Type of economic event",
+      "enum": ["payment.executed", "payment.received", "api.access", "wallet.initialized", "protocol.interaction"]
+    },
+    "arp_version": {
+      "type": "string",
+      "description": "ARP schema version",
+      "const": "0.1"
+    },
+    "agent_id": {
+      "type": "string",
+      "description": "Canonical agent identity: SHA256 of agent public key",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "alias": {
+      "type": "string",
+      "description": "Human-readable label. Optional. Non-unique. Never used for verification.",
+      "maxLength": 64
+    },
+    "protocol": {
+      "type": "string",
+      "description": "Settlement protocol used",
+      "enum": ["lightning", "L402", "onchain", "x402", "bsv", "fedimint", "ark", "taproot_assets", "other"]
+    },
+    "time_window": {
+      "type": "string",
+      "description": "Day of event. Day-level granularity only (privacy).",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "verified": {
+      "type": "boolean",
+      "description": "Whether cryptographic proof was provided and verified"
+    },
+    "submitted_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of submission to ARP server"
+    },
+    "settlement_reference": {
+      "type": "string",
+      "description": "Payment hash, preimage, or txid. Used for cryptographic verification. Not exposed in public feed."
+    },
+    "amount_bucket": {
+      "type": "string",
+      "description": "Amount range. Exact values are never stored.",
+      "enum": ["micro", "small", "medium", "large"],
+      "$comment": "micro = <1K sats / <$0.01 | small = 1K-10K sats / $0.01-$0.10 | medium = 10K-100K | large = >100K"
+    },
+    "direction": {
+      "type": "string",
+      "enum": ["inbound", "outbound"]
+    },
+    "counterparty_id": {
+      "type": "string",
+      "description": "SHA256 hash of counterparty public key. Optional.",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "service_description": {
+      "type": "string",
+      "description": "Human-readable context. Not stored in public feed.",
+      "maxLength": 256
+    },
+    "service_endpoint": {
+      "type": "string",
+      "description": "For api.access events: domain/endpoint accessed. Not stored in public feed.",
+      "maxLength": 256
+    },
+    "wallet_type": {
+      "type": "string",
+      "description": "For wallet.initialized events",
+      "enum": ["lightning", "onchain", "fedimint", "other"]
+    },
+    "interaction_type": {
+      "type": "string",
+      "description": "For protocol.interaction events: specific interaction identifier",
+      "maxLength": 64
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Protocol-specific additional data. Structure varies by protocol.",
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "event_type": { "const": "payment.executed" } } },
+      "then": { "required": ["settlement_reference", "amount_bucket", "direction"] }
+    },
+    {
+      "if": { "properties": { "event_type": { "const": "payment.received" } } },
+      "then": { "required": ["settlement_reference", "amount_bucket", "direction"] }
+    },
+    {
+      "if": { "properties": { "event_type": { "const": "api.access" } } },
+      "then": { "required": ["settlement_reference", "amount_bucket"] }
+    }
+  ]
+}
