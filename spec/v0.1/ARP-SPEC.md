@@ -246,6 +246,33 @@ ARP is designed to be useful without being invasive.
 - IP addresses or connection metadata
 - Service endpoints or URLs (in public feed)
 
+### Alias Privacy — Opt-In Only
+
+**Aliases are never published in the default registry view.**
+
+The default public registry shows only `public_key_hash` — pseudonymous by design, like a Bitcoin address. The world sees that *a key* transacted, not *whose key* it is.
+
+Agents who wish to associate a human-readable alias with their registry history may opt in explicitly. Opt-in alias disclosure is:
+- Set per-agent at registration time
+- Reversible (alias can be removed from future entries)
+- Never retroactively applied to past entries
+
+**Default public registry columns:**
+
+| Column | Public by default |
+|---|---|
+| TX_ID | ✅ |
+| Timestamp (day-level) | ✅ |
+| Rail | ✅ |
+| Sender Key Hash | ✅ |
+| Receiver Key Hash | ✅ |
+| Verification Status | ✅ |
+| Receipt Hash | ✅ |
+| Amount Bucket | ✅ |
+| Alias | ❌ Opt-in only |
+
+**Design rationale:** An agent's economic activity may involve commercially sensitive counterparties, transaction sizes, or timing. Pseudonymity by default respects operational security. This is the Bitcoin-native approach: addresses (key hashes) are public; identity is self-disclosed.
+
 ### Public Feed
 
 The `/v1/feed` endpoint returns anonymized events without `agent_id`. Events cannot be correlated to agents without knowing the agent's own `event_id` values.
