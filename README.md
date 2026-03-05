@@ -4,7 +4,7 @@
 
 Cryptographically verifiable identity and transaction verification for AI agents.
 
-> **🚧 MVP Status:** This project is in alpha/MVP stage. Core infrastructure works but cryptographic verification is currently a stub (accepts any non-empty signature). See [Current Limitations](#current-limitations) and [ROADMAP.md](./ROADMAP.md) for details.
+> **✅ v0.2.1 LIVE:** Real cryptographic verification is now working! ECDSA (SECP256K1) challenge-response protocol fully functional. See [ROADMAP.md](./ROADMAP.md) for Phase 4 (security audit) and future features.
 
 ## 📄 Whitepaper
 
@@ -112,29 +112,28 @@ await observer.recordTransaction({
 });
 ```
 
-## Current Limitations (MVP/Alpha)
-
-We're building in public. Here's what works today vs. what's coming:
+## Current Status (v0.2.1)
 
 ### ✅ Working Today
-- Agent registration with public key hashes
-- Transaction recording and querying
-- Badge generation (SVG)
+- **Real cryptographic verification** — ECDSA (SECP256K1) challenge-response protocol
+- Agent registration with public keys
+- Transaction recording and attestation
+- Badge generation (SVG) — Registered/Verified states
 - Reputation graph API
-- Basic verification flow
+- Replay protection (5-min expiry, single-use challenges)
 
-### 🚧 MVP Limitations
-- **Cryptographic verification is a stub** — Currently accepts any non-empty signature. Real challenge-response verification is in development (Phase 2).
-- **Single-server architecture** — Not yet distributed
-- **No formal security audit** — Planned before v1.0
-- **Small team** — See [TEAM.md](./TEAM.md)
+### 🔒 Security
+- Cryptographic verification: **IMPLEMENTED** (v0.2.1)
+- Challenge-response with SECP256K1
+- Time-bounded challenges (5-minute expiry)
+- Single-use nonces (replay protection)
 
-### 🔜 Coming Soon
-See [ROADMAP.md](./ROADMAP.md) for detailed timeline including:
-- Real challenge-response cryptographic verification
-- Replay protection
-- Security audit
-- Team transparency improvements
+### 🔜 Coming Soon (Phase 4+)
+See [ROADMAP.md](./ROADMAP.md) for:
+- Formal security audit
+- Distributed architecture
+- Advanced reputation algorithms
+- Enhanced sybil-resistance mechanisms
 
 ## Why This Matters
 
