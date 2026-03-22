@@ -85,8 +85,22 @@ def verify_signature_simple(message: bytes, signature_hex: str, public_key_hex: 
                 curve=ec.SECP256K1()
             )
             public_key = public_numbers.public_key()
+        elif len(public_key_bytes) == 33 and public_key_bytes[0] in (0x02, 0x03):
+            # Compressed format: 02/03 || x (32 bytes) — decompress using curve math
+            p = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
+            x = int.from_bytes(public_key_bytes[1:], 'big')
+            y_sq = (pow(x, 3, p) + 7) % p
+            y = pow(y_sq, (p + 1) // 4, p)
+            # Ensure parity matches prefix byte
+            if (y & 1) != (public_key_bytes[0] & 1):
+                y = p - y
+            public_numbers = ec.EllipticCurvePublicNumbers(
+                x=x,
+                y=y,
+                curve=ec.SECP256K1()
+            )
+            public_key = public_numbers.public_key()
         else:
-            # Compressed or other format not supported yet
             return False
         
         # Parse signature

@@ -341,7 +341,8 @@ def register_agent(
     public_key: str,
     agent_name: Optional[str] = None,
     framework: Optional[str] = None,
-    alias: Optional[str] = None
+    alias: Optional[str] = None,
+    legal_entity_id: Optional[str] = None
 ):
     """Register a new agent with the Observer Protocol."""
     # Generate agent_id as SHA256 hash of public_key
@@ -353,14 +354,15 @@ def register_agent(
 
     try:
         cursor.execute("""
-            INSERT INTO observer_agents (agent_id, public_key_hash, agent_name, alias, framework, verified, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            INSERT INTO observer_agents (agent_id, public_key_hash, agent_name, alias, framework, legal_entity_id, verified, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (agent_id) DO UPDATE SET
                 agent_name = EXCLUDED.agent_name,
                 alias = EXCLUDED.alias,
-                framework = EXCLUDED.framework
+                framework = EXCLUDED.framework,
+                legal_entity_id = EXCLUDED.legal_entity_id
             RETURNING agent_id
-        """, (agent_id, public_key_hash, agent_name, alias or agent_name, framework, False))
+        """, (agent_id, public_key_hash, agent_name, alias or agent_name, framework, legal_entity_id, False))
         
         conn.commit()
 
@@ -384,6 +386,96 @@ def register_agent(
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.patch("/observer/agent/{agent_id}")
+def update_agent(
+    agent_id: str,
+    agent_name: Optional[str] = None,
+    alias: Optional[str] = None,
+    framework: Optional[str] = None,
+    legal_entity_id: Optional[str] = None
+):
+    """Update an existing agent's information.
+    
+    Allows updating agent metadata including the optional legal_entity_id
+    for Corpo integration (legal entity wrapper for AI agents).
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    
+    try:
+        # Check if agent exists
+        cursor.execute("""
+            SELECT agent_id, agent_name, alias, framework, legal_entity_id, verified
+            FROM observer_agents WHERE agent_id = %s
+        """, (agent_id,))
+        
+        agent = cursor.fetchone()
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        
+        # Build dynamic update query
+        update_fields = []
+        params = []
+        
+        if agent_name is not None:
+            update_fields.append("agent_name = %s")
+            params.append(agent_name)
+        if alias is not None:
+            update_fields.append("alias = %s")
+            params.append(alias)
+        if framework is not None:
+            update_fields.append("framework = %s")
+            params.append(framework)
+        if legal_entity_id is not None:
+            update_fields.append("legal_entity_id = %s")
+            params.append(legal_entity_id)
+        
+        if not update_fields:
+            # No fields to update, return current state
+            return {
+                "agent_id": agent_id,
+                "agent_name": agent["agent_name"],
+                "alias": agent["alias"],
+                "framework": agent["framework"],
+                "legal_entity_id": agent["legal_entity_id"],
+                "verified": agent["verified"],
+                "message": "No fields provided for update"
+            }
+        
+        params.append(agent_id)
+        
+        cursor.execute(f"""
+            UPDATE observer_agents
+            SET {', '.join(update_fields)}
+            WHERE agent_id = %s
+            RETURNING agent_id, agent_name, alias, framework, legal_entity_id, verified, created_at, verified_at
+        """, tuple(params))
+        
+        updated = cursor.fetchone()
+        conn.commit()
+        
+        return {
+            "agent_id": updated["agent_id"],
+            "agent_name": updated["agent_name"],
+            "alias": updated["alias"],
+            "framework": updated["framework"],
+            "legal_entity_id": updated["legal_entity_id"],
+            "verified": updated["verified"],
+            "created_at": updated["created_at"].isoformat() if updated["created_at"] else None,
+            "verified_at": updated["verified_at"].isoformat() if updated["verified_at"] else None,
+            "message": "Agent updated successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
     finally:
         cursor.close()
         conn.close()
@@ -954,6 +1046,53 @@ def get_agent_badge(agent_id: str):
         conn.close()
 
 
+@app.get("/observer/agent/{public_key_hash}")
+def lookup_agent_by_hash(public_key_hash: str):
+    """Lookup an agent by its public key hash.
+    
+    Returns agent details including legal_entity_id if set.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        cursor.execute("""
+            SELECT agent_id, agent_name, alias, framework, legal_entity_id,
+                   verified, verified_at, created_at, access_level
+            FROM observer_agents WHERE public_key_hash = %s
+        """, (public_key_hash,))
+        agent = cursor.fetchone()
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+        cursor.execute("""
+            SELECT COUNT(*) as cnt FROM verified_events
+            WHERE agent_id = %s AND verified = TRUE
+        """, (agent["agent_id"],))
+        tx_count = cursor.fetchone()["cnt"]
+
+        return {
+            "agent_id": agent["agent_id"],
+            "agent_name": agent["agent_name"],
+            "alias": agent["alias"],
+            "framework": agent["framework"],
+            "legal_entity_id": agent["legal_entity_id"],
+            "access_level": agent["access_level"],
+            "verified": agent["verified"],
+            "verified_at": agent["verified_at"].isoformat() if agent["verified_at"] else None,
+            "first_seen": agent["created_at"].isoformat(),
+            "verified_tx_count": tx_count,
+            "badge_url": f"https://api.agenticterminal.ai/observer/badge/{agent['agent_id']}.svg",
+            "profile_url": f"https://observerprotocol.org/agents/{agent['agent_id']}"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @app.get("/observer/agents/{agent_id}")
 def get_agent_profile(agent_id: str):
     """Public agent profile — name, verification status, event count, first seen."""
@@ -961,7 +1100,7 @@ def get_agent_profile(agent_id: str):
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
         cursor.execute("""
-            SELECT agent_id, agent_name, alias, framework,
+            SELECT agent_id, agent_name, alias, framework, legal_entity_id,
                    verified, verified_at, created_at, access_level
             FROM observer_agents WHERE agent_id = %s
         """, (agent_id,))
@@ -986,6 +1125,7 @@ def get_agent_profile(agent_id: str):
             "agent_name": agent["agent_name"],
             "alias": agent["alias"],
             "framework": agent["framework"],
+            "legal_entity_id": agent["legal_entity_id"],
             "access_level": agent["access_level"],
             "verified": agent["verified"],
             "verified_at": agent["verified_at"].isoformat() if agent["verified_at"] else None,
