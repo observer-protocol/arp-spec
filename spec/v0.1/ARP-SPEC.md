@@ -182,6 +182,7 @@ Valid `protocol` values in v0.1:
 | `L402` | Lightning Labs HTTP 402 + macaroon standard |
 | `onchain` | Bitcoin on-chain transactions |
 | `x402` | Coinbase x402 HTTP payment protocol (USDC/stablecoin) |
+| `tether_wdk` | Tether WDK self-custodial wallet (USDT on Ethereum/Polygon, BTC) |
 | `bsv` | Bitcoin SV on-chain |
 | `fedimint` | Fedimint ecash |
 | `ark` | Ark Protocol (Bitcoin L2) |
@@ -212,7 +213,52 @@ For `protocol: "onchain"`, the `settlement_reference` is a transaction ID (txid)
 
 For `protocol: "x402"`, the `settlement_reference` is the Ethereum/Solana transaction hash of the USDC transfer. Verified against the respective chain.
 
-### 5.4 Verification Levels
+### 5.4 Tether WDK Verification
+
+For `protocol: "tether_wdk"`, the `settlement_reference` uses the format:
+
+```
+wdk:{chain}:{tx_hash}
+```
+
+Where:
+- `chain` is one of: `ethereum`, `polygon`, `bitcoin`
+- `tx_hash` is the blockchain transaction hash
+
+Example:
+```
+wdk:ethereum:0x1234567890abcdef...7890
+wdk:bitcoin:a1b2c3d4e5f6...g7h8
+```
+
+**Verification Method:**
+
+1. Parse the settlement reference to extract chain and tx_hash
+2. Query the appropriate blockchain:
+   - Ethereum/Polygon: JSON-RPC `eth_getTransactionReceipt` 
+   - Bitcoin: Block explorer API or Electrum
+3. Verify transaction exists and has at least 1 confirmation
+4. Verify transaction was successful (status = 1 for EVM, confirmed for BTC)
+5. Verify recipient and amount match expected values
+
+**Implementation:**
+
+The WDK verification adapter is available in the Observer Protocol SDK:
+```javascript
+import { WDKVerificationAdapter } from '@observerprotocol/sdk';
+
+const adapter = new WDKVerificationAdapter();
+const result = await adapter.verifyTransaction('ethereum', txHash, {
+  recipient: '0x...',
+  amount: '1.5',
+  token: 'USDT'
+});
+
+// Format for ARP submission
+const arpEvent = adapter.formatForARP(result, paymentDetails);
+```
+
+### 5.5 Verification Levels
 
 | Level | Description |
 |-------|-------------|
