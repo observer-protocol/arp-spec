@@ -1,3 +1,4 @@
+import uuid
 #!/usr/bin/env python3
 """
 VAC (Verified Agent Credential) Generator
@@ -10,6 +11,7 @@ import json
 import hashlib
 import secrets
 from datetime import datetime, timedelta
+import pytz
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass, field, asdict
 import psycopg2
@@ -376,10 +378,10 @@ class VACGenerator:
             VACCredential: The generated and signed VAC credential
         """
         # Generate credential ID
-        credential_id = f"vac_{agent_id}_{secrets.token_hex(8)}"
+        credential_id = str(uuid.uuid4())
         
         # Calculate timestamps
-        issued_at = datetime.utcnow()
+        issued_at = datetime.now(pytz.UTC)
         expires_at = issued_at + timedelta(days=VAC_MAX_AGE_DAYS)
         
         # Aggregate core fields

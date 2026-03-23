@@ -1253,7 +1253,8 @@ def get_vac_credential(agent_id: str, include_extensions: bool = True):
             vac_row = cursor.fetchone()
             
             # Generate new VAC if needed
-            if not vac_row or vac_row['expires_at'] < datetime.utcnow():
+            from datetime import timezone
+            if not vac_row or vac_row['expires_at'] < datetime.now(timezone.utc):
                 vac = generator.generate_vac(agent_id, include_extensions=include_extensions)
             else:
                 # Return existing VAC
