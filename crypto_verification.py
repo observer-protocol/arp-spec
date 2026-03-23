@@ -300,3 +300,121 @@ def get_cached_key_type(agent_id: str) -> str:
     if cached and isinstance(cached, str):
         return detect_key_type(cached)
     return 'unknown'
+
+
+# ============================================================
+# VAC (VERIFIED AGENT CREDENTIAL) SIGNING FUNCTIONS
+# ============================================================
+
+def sign_message_ed25519(message: bytes, private_key_hex: str) -> str:
+    """
+    Sign a message with an Ed25519 private key.
+    
+    Args:
+        message: The message to sign (bytes)
+        private_key_hex: The private key in hex format (64 bytes)
+        
+    Returns:
+        str: Hex-encoded signature
+    """
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    
+    private_key_bytes = bytes.fromhex(private_key_hex)
+    private_key = Ed25519PrivateKey.from_private_bytes(private_key_bytes)
+    signature = private_key.sign(message)
+    return signature.hex()
+
+
+def sign_message_secp256k1(message: bytes, private_key_hex: str) -> str:
+    """
+    Sign a message with a SECP256k1 private key.
+    
+    Args:
+        message: The message to sign (bytes)
+        private_key_hex: The private key in hex format (32 bytes)
+        
+    Returns:
+        str: Hex-encoded DER signature
+    """
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives import hashes
+    
+    private_key_bytes = bytes.fromhex(private_key_hex)
+    private_key = ec.derive_private_key(
+        int.from_bytes(private_key_bytes, 'big'),
+        ec.SECP256K1()
+    )
+    signature = private_key.sign(message, ec.ECDSA(hashes.SHA256()))
+    return signature.hex()
+
+
+def sign_message(message: bytes, private_key_hex: str, key_type: str = None) -> str:
+    """
+    Sign a message using the appropriate algorithm.
+    
+    Args:
+        message: The message to sign (bytes)
+        private_key_hex: The private key in hex format
+        key_type: 'ed25519' or 'secp256k1' (auto-detected if not provided)
+        
+    Returns:
+        str: Hex-encoded signature
+        
+    Raises:
+        ValueError: If key type is unsupported
+    """
+    if key_type is None:
+        # Try to detect based on key length
+        key_len = len(bytes.fromhex(private_key_hex))
+        if key_len == 32:
+            key_type = 'ed25519'
+        else:
+            key_type = 'secp256k1'
+    
+    if key_type == 'ed25519':
+        return sign_message_ed25519(message, private_key_hex)
+    elif key_type == 'secp256k1':
+        return sign_message_secp256k1(message, private_key_hex)
+    else:
+        raise ValueError(f"Unsupported key type: {key_type}")
+
+
+def verify_vac_signature(vac_payload: dict, signature_hex: str, public_key_hex: str) -> bool:
+    """
+    Verify a VAC credential signature.
+    
+    The VAC payload should NOT include the 'signature' field when verifying.
+    
+    Args:
+        vac_payload: The VAC credential dictionary (without signature field)
+        signature_hex: The hex-encoded signature
+        public_key_hex: The OP public key in hex format
+        
+    Returns:
+        bool: True if signature is valid
+    """
+    import json
+    
+    # Create canonical JSON
+    canonical = json.dumps(vac_payload, sort_keys=True, separators=(',', ':'))
+    message_bytes = canonical.encode('utf-8')
+    
+    # Verify using appropriate algorithm
+    return verify_signature(message_bytes, signature_hex, public_key_hex)
+
+
+def generate_vac_hash(vac_payload: dict) -> str:
+    """
+    Generate the SHA256 hash of a VAC credential's canonical JSON.
+    
+    Args:
+        vac_payload: The VAC credential dictionary
+        
+    Returns:
+        str: Hex-encoded SHA256 hash
+    """
+    import json
+    import hashlib
+    
+    canonical = json.dumps(vac_payload, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(canonical.encode()).hexdigest()

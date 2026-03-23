@@ -29,6 +29,10 @@ from crypto_verification import (
     get_cached_key_type
 )
 
+# Import VAC and Partner Registry modules
+from vac_generator import VACGenerator, VAC_MAX_AGE_DAYS, VAC_REFRESH_HOURS
+from partner_registry import PartnerRegistry, register_corpo_partner, issue_corpo_attestation
+
 # Flag for crypto availability - cryptography library is confirmed available
 ECDSA_AVAILABLE = True
 
@@ -1175,6 +1179,613 @@ def get_agent_profile(agent_id: str):
     finally:
         cursor.close()
         conn.close()
+
+
+# ============================================================
+# VAC (VERIFIED AGENT CREDENTIAL) ENDPOINTS
+# ============================================================
+
+class PartnerRegistrationRequest(BaseModel):
+    """Request body for registering a partner."""
+    partner_name: str
+    partner_type: str  # 'corpo', 'verifier', 'counterparty', 'infrastructure'
+    public_key: str
+    webhook_url: Optional[str] = None
+    metadata: Optional[dict] = None
+
+
+class AttestationRequest(BaseModel):
+    """Request body for issuing an attestation."""
+    agent_id: str
+    claims: dict
+    credential_id: Optional[str] = None
+    expires_in_days: Optional[int] = None
+    attestation_signature: Optional[str] = None
+
+
+class CounterpartyMetadataRequest(BaseModel):
+    """Request body for adding counterparty metadata."""
+    counterparty_id: str
+    metadata: dict
+    ipfs_cid: Optional[str] = None
+
+
+@app.get("/vac/{agent_id}")
+def get_vac_credential(agent_id: str, include_extensions: bool = True):
+    """
+    Get the active VAC (Verified Agent Credential) for an agent.
+    
+    Returns the latest valid VAC credential including:
+    - Core fields: aggregated transaction data, volume, counterparties, rails
+    - Extensions: partner attestations and counterparty metadata hashes
+    
+    VACs expire after 7 days and refresh automatically every 24 hours.
+    """
+    try:
+        generator = VACGenerator()
+        
+        # Check if agent needs a new VAC
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        try:
+            # Check if agent exists and is verified
+            cursor.execute("""
+                SELECT agent_id, verified FROM observer_agents WHERE agent_id = %s
+            """, (agent_id,))
+            
+            agent = cursor.fetchone()
+            if not agent:
+                raise HTTPException(status_code=404, detail="Agent not found")
+            
+            if not agent['verified']:
+                raise HTTPException(status_code=403, detail="Agent not verified")
+            
+            # Check for active VAC
+            cursor.execute("""
+                SELECT credential_id, issued_at, expires_at
+                FROM vac_credentials
+                WHERE agent_id = %s AND is_revoked = FALSE
+                ORDER BY issued_at DESC
+                LIMIT 1
+            """, (agent_id,))
+            
+            vac_row = cursor.fetchone()
+            
+            # Generate new VAC if needed
+            if not vac_row or vac_row['expires_at'] < datetime.utcnow():
+                vac = generator.generate_vac(agent_id, include_extensions=include_extensions)
+            else:
+                # Return existing VAC
+                vac = generator.get_vac(agent_id)
+            
+            if not vac:
+                raise HTTPException(status_code=404, detail="VAC not found")
+            
+            return vac.to_dict()
+            
+        finally:
+            cursor.close()
+            conn.close()
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"VAC retrieval failed: {str(e)}")
+
+
+@app.post("/vac/{agent_id}/refresh")
+def refresh_vac_credential(agent_id: str, force: bool = False):
+    """
+    Manually refresh a VAC credential.
+    
+    Normally VACs refresh automatically every 24 hours.
+    Use this endpoint to force an immediate refresh.
+    """
+    try:
+        generator = VACGenerator()
+        
+        # Verify agent exists and is verified
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                SELECT verified FROM observer_agents WHERE agent_id = %s
+            """, (agent_id,))
+            
+            result = cursor.fetchone()
+            if not result:
+                raise HTTPException(status_code=404, detail="Agent not found")
+            if not result[0]:
+                raise HTTPException(status_code=403, detail="Agent not verified")
+            
+        finally:
+            cursor.close()
+            conn.close()
+        
+        # Generate new VAC
+        vac = generator.generate_vac(agent_id)
+        
+        return {
+            "success": True,
+            "credential_id": vac.credential_id,
+            "issued_at": vac.issued_at,
+            "expires_at": vac.expires_at,
+            "message": "VAC credential refreshed successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"VAC refresh failed: {str(e)}")
+
+
+@app.get("/vac/{agent_id}/history")
+def get_vac_history(agent_id: str, limit: int = 10):
+    """Get VAC credential history for an agent."""
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    
+    try:
+        cursor.execute("""
+            SELECT 
+                credential_id,
+                vac_version,
+                total_transactions,
+                total_volume_sats,
+                unique_counterparties,
+                rails_used,
+                issued_at,
+                expires_at,
+                is_revoked,
+                revoked_at,
+                vac_payload_hash
+            FROM vac_credentials
+            WHERE agent_id = %s
+            ORDER BY issued_at DESC
+            LIMIT %s
+        """, (agent_id, limit))
+        
+        credentials = []
+        for row in cursor.fetchall():
+            cred = {
+                "credential_id": row['credential_id'],
+                "version": row['vac_version'],
+                "core": {
+                    "total_transactions": row['total_transactions'],
+                    "total_volume_sats": row['total_volume_sats'],
+                    "unique_counterparties": row['unique_counterparties'],
+                    "rails_used": row['rails_used']
+                },
+                "issued_at": row['issued_at'].isoformat(),
+                "expires_at": row['expires_at'].isoformat(),
+                "is_revoked": row['is_revoked'],
+                "payload_hash": row['vac_payload_hash']
+            }
+            if row['revoked_at']:
+                cred["revoked_at"] = row['revoked_at'].isoformat()
+            credentials.append(cred)
+        
+        return {
+            "agent_id": agent_id,
+            "credentials": credentials,
+            "count": len(credentials)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"VAC history retrieval failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ============================================================
+# PARTNER REGISTRY ENDPOINTS
+# ============================================================
+
+@app.post("/vac/partners/register")
+def register_partner(request: PartnerRegistrationRequest):
+    """
+    Register a new partner for issuing VAC attestations.
+    
+    Partners can be:
+    - 'corpo': Legal entity verification
+    - 'verifier': Identity or credential verification
+    - 'counterparty': Counterparty metadata attestation
+    - 'infrastructure': Infrastructure providers
+    """
+    try:
+        registry = PartnerRegistry()
+        result = registry.register_partner(
+            partner_name=request.partner_name,
+            partner_type=request.partner_type,
+            public_key=request.public_key,
+            webhook_url=request.webhook_url,
+            metadata=request.metadata
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Partner registration failed: {str(e)}")
+
+
+@app.get("/vac/partners")
+def list_partners(
+    partner_type: Optional[str] = None,
+    is_active: Optional[bool] = None
+):
+    """List all registered partners with optional filtering."""
+    try:
+        registry = PartnerRegistry()
+        partners = registry.list_partners(partner_type=partner_type, is_active=is_active)
+        return {"partners": partners, "count": len(partners)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Partner listing failed: {str(e)}")
+
+
+@app.get("/vac/partners/{partner_id}")
+def get_partner(partner_id: str):
+    """Get details for a specific partner."""
+    try:
+        registry = PartnerRegistry()
+        partner = registry.get_partner(partner_id)
+        if not partner:
+            raise HTTPException(status_code=404, detail="Partner not found")
+        return partner
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Partner retrieval failed: {str(e)}")
+
+
+# ============================================================
+# ATTESTATION ENDPOINTS
+# ============================================================
+
+@app.post("/vac/partners/{partner_id}/attest")
+def issue_attestation(partner_id: str, request: AttestationRequest):
+    """
+    Issue a partner attestation for an agent.
+    
+    Attestations attach verified claims to an agent's VAC credential.
+    Common uses:
+    - Corpo partners attest legal_entity_id
+    - Verifiers attest identity verification level
+    - Counterparties attest service relationships
+    """
+    try:
+        registry = PartnerRegistry()
+        result = registry.issue_attestation(
+            partner_id=partner_id,
+            agent_id=request.agent_id,
+            claims=request.claims,
+            credential_id=request.credential_id,
+            expires_in_days=request.expires_in_days,
+            attestation_signature=request.attestation_signature
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Attestation issuance failed: {str(e)}")
+
+
+@app.get("/vac/{agent_id}/attestations")
+def get_agent_attestations(
+    agent_id: str,
+    partner_type: Optional[str] = None
+):
+    """Get all partner attestations for an agent."""
+    try:
+        registry = PartnerRegistry()
+        attestations = registry.get_attestations_for_agent(agent_id, partner_type=partner_type)
+        return {
+            "agent_id": agent_id,
+            "attestations": attestations,
+            "count": len(attestations)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Attestation retrieval failed: {str(e)}")
+
+
+# ============================================================
+# COUNTERPARTY METADATA ENDPOINTS
+# ============================================================
+
+@app.post("/vac/{credential_id}/counterparty")
+def add_counterparty_metadata(
+    credential_id: str,
+    request: CounterpartyMetadataRequest
+):
+    """
+    Add counterparty metadata hash to a VAC credential.
+    
+    The actual metadata is hashed and optionally stored on IPFS.
+    Only the hash is anchored to the VAC for privacy.
+    """
+    try:
+        registry = PartnerRegistry()
+        result = registry.add_counterparty_metadata(
+            credential_id=credential_id,
+            counterparty_id=request.counterparty_id,
+            metadata=request.metadata,
+            ipfs_cid=request.ipfs_cid
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Counterparty metadata addition failed: {str(e)}")
+
+
+@app.get("/vac/{credential_id}/counterparty")
+def get_counterparty_metadata(credential_id: str):
+    """Get all counterparty metadata hashes for a VAC credential."""
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    
+    try:
+        cursor.execute("""
+            SELECT 
+                counterparty_id,
+                metadata_hash,
+                merkle_root,
+                ipfs_cid,
+                created_at
+            FROM counterparty_metadata
+            WHERE credential_id = %s
+            ORDER BY created_at DESC
+        """, (credential_id,))
+        
+        metadata = [{
+            "counterparty_id": row['counterparty_id'],
+            "metadata_hash": row['metadata_hash'],
+            "merkle_root": row['merkle_root'],
+            "ipfs_cid": row['ipfs_cid'],
+            "created_at": row['created_at'].isoformat()
+        } for row in cursor.fetchall()]
+        
+        return {
+            "credential_id": credential_id,
+            "counterparties": metadata,
+            "count": len(metadata)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Counterparty metadata retrieval failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ============================================================
+# REVOCATION REGISTRY ENDPOINTS
+# ============================================================
+
+@app.get("/vac/revocations")
+def get_revocation_registry(
+    agent_id: Optional[str] = None,
+    limit: int = 50
+):
+    """
+    Get the VAC revocation registry.
+    
+    Lists all revoked credentials with revocation reasons.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    
+    try:
+        query = """
+            SELECT 
+                r.revocation_id,
+                r.credential_id,
+                r.agent_id,
+                r.revoked_at,
+                r.reason,
+                r.details,
+                r.webhook_delivered,
+                p.partner_name as revoked_by_name
+            FROM vac_revocation_registry r
+            LEFT JOIN partner_registry p ON p.partner_id = r.revoked_by
+            WHERE 1=1
+        """
+        params = []
+        
+        if agent_id:
+            query += " AND r.agent_id = %s"
+            params.append(agent_id)
+        
+        query += " ORDER BY r.revoked_at DESC LIMIT %s"
+        params.append(limit)
+        
+        cursor.execute(query, params)
+        
+        revocations = []
+        for row in cursor.fetchall():
+            rev = {
+                "revocation_id": str(row['revocation_id']),
+                "credential_id": row['credential_id'],
+                "agent_id": row['agent_id'],
+                "revoked_at": row['revoked_at'].isoformat(),
+                "reason": row['reason'],
+                "webhook_delivered": row['webhook_delivered']
+            }
+            if row['details']:
+                rev["details"] = row['details']
+            if row['revoked_by_name']:
+                rev["revoked_by"] = row['revoked_by_name']
+            revocations.append(rev)
+        
+        return {
+            "revocations": revocations,
+            "count": len(revocations)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Revocation registry retrieval failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.post("/vac/{credential_id}/revoke")
+def revoke_credential(
+    credential_id: str,
+    reason: str,
+    details: Optional[str] = None,
+    revoked_by: Optional[str] = None
+):
+    """
+    Revoke a VAC credential.
+    
+    Reasons: 'compromise', 'expiry', 'violation', 'request', 'other'
+    
+    Revoked credentials are permanently invalidated and cannot be renewed.
+    A new credential must be issued.
+    """
+    valid_reasons = ['compromise', 'expiry', 'violation', 'request', 'other']
+    
+    if reason not in valid_reasons:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid reason. Must be one of: {', '.join(valid_reasons)}"
+        )
+    
+    try:
+        generator = VACGenerator()
+        generator.revoke_vac(credential_id, reason, revoked_by)
+        
+        return {
+            "success": True,
+            "credential_id": credential_id,
+            "reason": reason,
+            "revoked_at": datetime.utcnow().isoformat(),
+            "message": "Credential revoked successfully"
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Credential revocation failed: {str(e)}")
+
+
+# ============================================================
+# CORPO MIGRATION ENDPOINTS
+# ============================================================
+
+@app.post("/vac/corpo/register")
+def register_corpo_partner_endpoint(
+    legal_entity_name: str,
+    public_key: str,
+    webhook_url: Optional[str] = None
+):
+    """
+    Register a Corpo legal wrapper partner.
+    
+    Corpo partners handle legal_entity_id attestations.
+    Per VAC v0.3, legal_entity_id is moved from agent table to partner attestations.
+    """
+    try:
+        result = register_corpo_partner(
+            legal_entity_name=legal_entity_name,
+            public_key=public_key,
+            webhook_url=webhook_url
+        )
+        return {
+            **result,
+            "note": "Corpo partner registered. Use /vac/partners/{id}/attest to issue legal_entity_id attestations."
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Corpo registration failed: {str(e)}")
+
+
+@app.post("/vac/corpo/{partner_id}/attest-entity")
+def corpo_attest_legal_entity(
+    partner_id: str,
+    agent_id: str,
+    legal_entity_id: str,
+    jurisdiction: Optional[str] = None,
+    compliance_status: Optional[str] = None,
+    attestation_signature: Optional[str] = None
+):
+    """
+    Issue a Corpo legal entity attestation.
+    
+    This is the VAC v0.3 way to attach legal_entity_id to an agent.
+    The legal_entity_id is stored in partner_attestations, not the agent table.
+    """
+    try:
+        result = issue_corpo_attestation(
+            partner_id=partner_id,
+            agent_id=agent_id,
+            legal_entity_id=legal_entity_id,
+            jurisdiction=jurisdiction,
+            compliance_status=compliance_status,
+            attestation_signature=attestation_signature
+        )
+        return {
+            **result,
+            "note": "Legal entity attestation issued. This replaces the legacy agent.legal_entity_id field."
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Legal entity attestation failed: {str(e)}")
+
+
+@app.get("/vac/{agent_id}/legal-entity")
+def get_legal_entity_attestation(agent_id: str):
+    """
+    Get the legal entity attestation for an agent (VAC v0.3 format).
+    
+    Returns legal_entity_id from partner attestations, not the legacy agent table.
+    """
+    try:
+        registry = PartnerRegistry()
+        attestations = registry.get_attestations_for_agent(agent_id, partner_type='corpo')
+        
+        if not attestations:
+            # Fallback: check legacy field during migration period
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            try:
+                cursor.execute("""
+                    SELECT legal_entity_id FROM observer_agents WHERE agent_id = %s
+                """, (agent_id,))
+                row = cursor.fetchone()
+                if row and row['legal_entity_id']:
+                    return {
+                        "agent_id": agent_id,
+                        "legal_entity_id": row['legal_entity_id'],
+                        "source": "legacy_agent_table",
+                        "note": "This agent has not migrated to VAC v0.3 partner attestations yet"
+                    }
+            finally:
+                cursor.close()
+                conn.close()
+            
+            raise HTTPException(status_code=404, detail="No legal entity attestation found")
+        
+        # Return most recent corpo attestation
+        latest = attestations[0]
+        return {
+            "agent_id": agent_id,
+            "legal_entity_id": latest['claims'].get('legal_entity_id'),
+            "jurisdiction": latest['claims'].get('jurisdiction'),
+            "compliance_status": latest['claims'].get('compliance_status'),
+            "attested_by": latest['partner_name'],
+            "attested_at": latest['issued_at'],
+            "source": "vac_partner_attestation",
+            "format": "VAC v0.3"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Legal entity retrieval failed: {str(e)}")
 
 
 if __name__ == "__main__":
