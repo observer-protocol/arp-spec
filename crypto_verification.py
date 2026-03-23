@@ -2,10 +2,12 @@
 # Using Python's built-in cryptography library (already installed)
 
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature, encode_dss_signature
 from cryptography.exceptions import InvalidSignature
 import hashlib
+import base58
 
 
 def recover_public_key_from_signature(message: bytes, signature_hex: str) -> tuple:
@@ -140,10 +142,161 @@ def verify_signature_simple(message: bytes, signature_hex: str, public_key_hex: 
 
 _PUBLIC_KEY_CACHE = {}
 
+def detect_key_type(public_key_hex: str) -> str:
+    """
+    Detect the type of public key based on its format.
+    
+    SECP256k1 keys are 33 bytes (compressed) or 65 bytes (uncompressed)
+    Ed25519 keys are 32 bytes
+    
+    Args:
+        public_key_hex: The public key in hex format
+        
+    Returns:
+        str: 'secp256k1', 'ed25519', or 'unknown'
+    """
+    try:
+        # Remove '0x' prefix if present
+        if public_key_hex.startswith('0x'):
+            public_key_hex = public_key_hex[2:]
+        
+        public_key_bytes = bytes.fromhex(public_key_hex)
+        key_len = len(public_key_bytes)
+        
+        # SECP256k1 compressed: 33 bytes starting with 0x02 or 0x03
+        if key_len == 33 and public_key_bytes[0] in (0x02, 0x03):
+            return 'secp256k1'
+        
+        # SECP256k1 uncompressed: 65 bytes starting with 0x04
+        if key_len == 65 and public_key_bytes[0] == 0x04:
+            return 'secp256k1'
+        
+        # Ed25519: 32 bytes (raw)
+        if key_len == 32:
+            return 'ed25519'
+        
+        return 'unknown'
+    except Exception:
+        return 'unknown'
+
+
+def verify_ed25519_signature(message_bytes: bytes, signature_hex: str, public_key_hex: str) -> bool:
+    """
+    Verify an Ed25519 signature against a message and public key.
+    
+    Used for Solana and other Ed25519-based blockchain agents.
+    
+    Args:
+        message_bytes: The original message that was signed (bytes)
+        signature_hex: The signature in hex format (64 bytes)
+        public_key_hex: The public key in hex format (32 bytes) OR base58-encoded Solana address
+    
+    Returns:
+        bool: True if signature is valid, False otherwise
+    """
+    try:
+        # Remove '0x' prefix if present
+        if public_key_hex.startswith('0x'):
+            public_key_hex = public_key_hex[2:]
+        if signature_hex.startswith('0x'):
+            signature_hex = signature_hex[2:]
+        
+        # Try to decode public key - could be hex or base58 (Solana address)
+        public_key_bytes = None
+        try:
+            # Try hex first
+            public_key_bytes = bytes.fromhex(public_key_hex)
+            if len(public_key_bytes) != 32:
+                # If not 32 bytes, might be base58 encoded
+                raise ValueError("Not 32 bytes")
+        except ValueError:
+            # Try base58 decoding (for Solana addresses)
+            try:
+                public_key_bytes = base58.b58decode(public_key_hex)
+                if len(public_key_bytes) != 32:
+                    print(f"Ed25519 verification error: Invalid public key length {len(public_key_bytes)}")
+                    return False
+            except Exception:
+                print(f"Ed25519 verification error: Could not decode public key")
+                return False
+        
+        # Decode signature (64 bytes for Ed25519)
+        sig_bytes = bytes.fromhex(signature_hex)
+        if len(sig_bytes) != 64:
+            print(f"Ed25519 verification error: Invalid signature length {len(sig_bytes)}")
+            return False
+        
+        # Load the Ed25519 public key
+        public_key = Ed25519PublicKey.from_public_bytes(public_key_bytes)
+        
+        # Verify the signature
+        public_key.verify(sig_bytes, message_bytes)
+        
+        return True
+        
+    except InvalidSignature:
+        return False
+    except Exception as e:
+        print(f"Ed25519 verification error: {e}")
+        return False
+
+
+def verify_signature(message_bytes: bytes, signature_hex: str, public_key_hex: str) -> bool:
+    """
+    Verify a signature using the appropriate algorithm based on key type.
+    
+    Automatically detects whether the public key is SECP256k1 or Ed25519
+    and routes to the correct verification function.
+    
+    Args:
+        message_bytes: The original message that was signed (bytes)
+        signature_hex: The signature in hex format
+        public_key_hex: The public key in hex format (or base58 for Solana)
+    
+    Returns:
+        bool: True if signature is valid, False otherwise
+    """
+    key_type = detect_key_type(public_key_hex)
+    
+    if key_type == 'ed25519':
+        return verify_ed25519_signature(message_bytes, signature_hex, public_key_hex)
+    elif key_type == 'secp256k1':
+        return verify_signature_simple(message_bytes, signature_hex, public_key_hex)
+    else:
+        # Try Ed25519 as fallback (handles base58 Solana addresses which we can't detect length-wise)
+        result = verify_ed25519_signature(message_bytes, signature_hex, public_key_hex)
+        if result:
+            return True
+        # If that fails, try SECP256k1
+        return verify_signature_simple(message_bytes, signature_hex, public_key_hex)
+
+
 def cache_public_key(agent_id: str, public_key_hex: str):
-    """Temporary cache for public keys during testing."""
-    _PUBLIC_KEY_CACHE[agent_id] = public_key_hex
+    """
+    Cache the public key and its type for an agent.
+    
+    Stores both the key and detected type to avoid re-detection on every verification.
+    """
+    key_type = detect_key_type(public_key_hex)
+    _PUBLIC_KEY_CACHE[agent_id] = {
+        'public_key': public_key_hex,
+        'key_type': key_type
+    }
 
 def get_cached_public_key(agent_id: str) -> str:
-    """Get cached public key."""
-    return _PUBLIC_KEY_CACHE.get(agent_id)
+    """Get cached public key (returns just the key string)."""
+    cached = _PUBLIC_KEY_CACHE.get(agent_id)
+    if cached and isinstance(cached, dict):
+        return cached.get('public_key')
+    # Legacy support: plain string
+    return cached
+
+def get_cached_key_type(agent_id: str) -> str:
+    """Get cached key type for an agent."""
+    cached = _PUBLIC_KEY_CACHE.get(agent_id)
+    if cached and isinstance(cached, dict):
+        return cached.get('key_type', 'unknown')
+    # Legacy support: try to detect from string
+    if cached and isinstance(cached, str):
+        return detect_key_type(cached)
+    return 'unknown'

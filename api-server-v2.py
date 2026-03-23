@@ -7,6 +7,7 @@ Canonical API for machine-native settlement systems data
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import psycopg2
 import psycopg2.extras
 from typing import Optional, List
@@ -18,10 +19,29 @@ import uuid
 import base64
 import sys
 sys.path.insert(0, '/home/futurebit/.openclaw/workspace/observer-protocol')
-from crypto_verification import verify_signature_simple, cache_public_key, get_cached_public_key
+from crypto_verification import (
+    verify_signature_simple, 
+    verify_ed25519_signature,
+    verify_signature,
+    cache_public_key, 
+    get_cached_public_key,
+    detect_key_type,
+    get_cached_key_type
+)
 
 # Flag for crypto availability - cryptography library is confirmed available
 ECDSA_AVAILABLE = True
+
+
+class AgentUpdateRequest(BaseModel):
+    """Request body for updating agent metadata."""
+    agent_name: Optional[str] = None
+    alias: Optional[str] = None
+    framework: Optional[str] = None
+    legal_entity_id: Optional[str] = None
+    
+    class Config:
+        extra = "forbid"  # Only allow specified fields
 
 
 def verify_ecdsa_signature(message: bytes, signature_hex: str, public_key_hex: str) -> bool:
@@ -110,7 +130,7 @@ app.add_middleware(
         "https://www.agenticterminal.ai",
     ],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -392,17 +412,17 @@ def register_agent(
 
 
 @app.patch("/observer/agent/{agent_id}")
-def update_agent(
-    agent_id: str,
-    agent_name: Optional[str] = None,
-    alias: Optional[str] = None,
-    framework: Optional[str] = None,
-    legal_entity_id: Optional[str] = None
-):
+def update_agent(agent_id: str, update: AgentUpdateRequest):
     """Update an existing agent's information.
     
     Allows updating agent metadata including the optional legal_entity_id
     for Corpo integration (legal entity wrapper for AI agents).
+    
+    Request body should be JSON with fields to update:
+    - agent_name: Optional[str]
+    - alias: Optional[str]
+    - framework: Optional[str]
+    - legal_entity_id: Optional[str]
     """
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -418,22 +438,22 @@ def update_agent(
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
         
-        # Build dynamic update query
+        # Build dynamic update query from request body
         update_fields = []
         params = []
         
-        if agent_name is not None:
+        if update.agent_name is not None:
             update_fields.append("agent_name = %s")
-            params.append(agent_name)
-        if alias is not None:
+            params.append(update.agent_name)
+        if update.alias is not None:
             update_fields.append("alias = %s")
-            params.append(alias)
-        if framework is not None:
+            params.append(update.alias)
+        if update.framework is not None:
             update_fields.append("framework = %s")
-            params.append(framework)
-        if legal_entity_id is not None:
+            params.append(update.framework)
+        if update.legal_entity_id is not None:
             update_fields.append("legal_entity_id = %s")
-            params.append(legal_entity_id)
+            params.append(update.legal_entity_id)
         
         if not update_fields:
             # No fields to update, return current state
@@ -625,9 +645,11 @@ def verify_agent(agent_id: str, signed_challenge: str, challenge_id: Optional[st
         
         # Phase 2: Real cryptographic signature verification
         # Verify the signature cryptographically against the stored public key
+        # Supports both SECP256k1 (Ethereum/Bitcoin) and Ed25519 (Solana) keys
         
         # Get the cached public key
         public_key_hex = get_cached_public_key(agent_id)
+        key_type = get_cached_key_type(agent_id)
         
         if not public_key_hex:
             # Try to get from agent record if stored there
@@ -639,7 +661,19 @@ def verify_agent(agent_id: str, signed_challenge: str, challenge_id: Optional[st
         
         # Verify the signature cryptographically
         nonce_bytes = challenge["nonce"].encode('utf-8')
-        is_valid = verify_signature_simple(nonce_bytes, signed_challenge, public_key_hex)
+        
+        # Use the appropriate verification based on key type
+        if key_type == 'ed25519':
+            is_valid = verify_ed25519_signature(nonce_bytes, signed_challenge, public_key_hex)
+            verification_method = "challenge_response_ed25519"
+        elif key_type == 'secp256k1':
+            is_valid = verify_signature_simple(nonce_bytes, signed_challenge, public_key_hex)
+            verification_method = "challenge_response_secp256k1"
+        else:
+            # Auto-detect if type not cached
+            is_valid = verify_signature(nonce_bytes, signed_challenge, public_key_hex)
+            detected_type = detect_key_type(public_key_hex)
+            verification_method = f"challenge_response_{detected_type}"
         
         if not is_valid:
             raise HTTPException(
@@ -648,7 +682,6 @@ def verify_agent(agent_id: str, signed_challenge: str, challenge_id: Optional[st
             )
         
         verification_successful = True
-        verification_method = "challenge_response_v2_real"
         
         # Mark challenge as used (replay protection)
         cursor.execute("""
