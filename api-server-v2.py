@@ -794,6 +794,18 @@ def submit_transaction(
         
         stored_at = datetime.utcnow()
         
+        # Check for duplicate event_id or transaction_hash
+        cursor.execute("SELECT event_id FROM verified_events WHERE event_id = %s", (event_id,))
+        if cursor.fetchone():
+            conn.rollback()
+            raise HTTPException(status_code=409, detail=f"Transaction already exists: {event_id}")
+        
+        if transaction_reference:
+            cursor.execute("SELECT event_id FROM verified_events WHERE transaction_hash = %s", (transaction_reference,))
+            if cursor.fetchone():
+                conn.rollback()
+                raise HTTPException(status_code=409, detail=f"Transaction hash already exists: {transaction_reference}")
+        
         cursor.execute("""
             INSERT INTO verified_events (
                 event_id, agent_id, counterparty_id, event_type, protocol,
