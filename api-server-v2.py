@@ -778,6 +778,7 @@ def submit_transaction(
         direction = "outbound"
         counterparty_id = None
         service_description = None
+        preimage = None
         
         if optional_metadata:
             try:
@@ -787,6 +788,7 @@ def submit_transaction(
                 direction = metadata.get("direction", "outbound")
                 counterparty_id = metadata.get("counterparty_id")
                 service_description = metadata.get("service_description")
+                preimage = metadata.get("preimage")
             except:
                 pass
         
@@ -796,12 +798,12 @@ def submit_transaction(
             INSERT INTO verified_events (
                 event_id, agent_id, counterparty_id, event_type, protocol,
                 transaction_hash, time_window, amount_bucket, direction,
-                service_description, verified, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                service_description, preimage, verified, created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         """, (
             event_id, agent_id, counterparty_id, event_type, protocol,
             transaction_reference, timestamp[:10] if timestamp else None,
-            amount_bucket, direction, service_description, True
+            amount_bucket, direction, service_description, preimage, True
         ))
         
         conn.commit()
