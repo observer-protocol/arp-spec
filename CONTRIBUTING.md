@@ -22,8 +22,8 @@ Thank you for your interest in contributing! This project is building the trust 
 
 ```bash
 # Clone the repository
-git clone https://github.com/observer-protocol/arp-spec.git
-cd arp-spec
+git clone https://github.com/observer-protocol/observer-protocol-spec.git
+cd observer-protocol-spec
 
 # For SDK development
 cd sdk

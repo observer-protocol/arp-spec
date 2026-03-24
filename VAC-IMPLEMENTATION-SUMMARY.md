@@ -72,7 +72,7 @@ Successfully implemented the Observer Protocol VAC (Verified Agent Credential) s
   - Added `generate_vac_hash()` function
 
 ### Documentation
-- `/home/futurebit/.openclaw/workspace/observer-protocol-repo/spec/VAC-SPEC.md`
+- `/home/futurebit/.openclaw/workspace/observer-protocol-repo/spec/OBSERVER-PROTOCOL-SPEC.md`
   - Complete VAC specification v0.3
   - JSON Schema definition
   - API reference
