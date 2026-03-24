@@ -865,15 +865,36 @@ def get_trends():
 
 @app.get("/observer/feed")
 def get_feed(limit: int = 50):
-    """Get last 50 verified events (anonymized — no agent_id in response)."""
+    """Get last 50 verified events with full details (anonymized — no agent_id in response)."""
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     
     try:
         cursor.execute("""
-            SELECT event_type, protocol, time_window, amount_bucket, verified, created_at
-            FROM verified_events
-            ORDER BY created_at DESC
+            SELECT 
+                ve.event_id,
+                ve.event_type,
+                ve.protocol,
+                ve.transaction_hash,
+                ve.time_window,
+                ve.amount_bucket,
+                ve.direction,
+                ve.service_description,
+                ve.preimage,
+                ve.counterparty_id,
+                ve.verified,
+                ve.created_at,
+                oa.alias as agent_alias,
+                CASE 
+                    WHEN ve.amount_bucket = 'micro' THEN 21000
+                    WHEN ve.amount_bucket = 'small' THEN 100000
+                    WHEN ve.amount_bucket = 'medium' THEN 500000
+                    WHEN ve.amount_bucket = 'large' THEN 1000000
+                    ELSE 21000
+                END as amount_sats
+            FROM verified_events ve
+            LEFT JOIN observer_agents oa ON ve.agent_id = oa.agent_id
+            ORDER BY ve.created_at DESC
             LIMIT %s
         """, (limit,))
         
