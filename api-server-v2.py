@@ -1130,6 +1130,71 @@ def lookup_agent_by_hash(public_key_hash: str):
         conn.close()
 
 
+# ============================================================
+# AGENT LIST ENDPOINT (for registry page) - MUST BE BEFORE /{agent_id}
+# ============================================================
+
+@app.get("/observer/agents/list")
+async def list_agents():
+    """List all registered agents with basic stats (for registry page)."""
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        cursor.execute("""
+            SELECT 
+                oa.agent_id,
+                oa.agent_name,
+                oa.alias,
+                oa.framework,
+                oa.verified,
+                oa.verified_at,
+                oa.created_at,
+                oa.legal_entity_id,
+                COALESCE(
+                    (SELECT COUNT(*) FROM verified_events ve 
+                     WHERE ve.agent_id = oa.agent_id AND ve.verified = TRUE), 
+                    0
+                ) as tx_count,
+                COALESCE(
+                    (SELECT COUNT(DISTINCT ve.counterparty_id) FROM verified_events ve 
+                     WHERE ve.agent_id = oa.agent_id AND ve.verified = TRUE),
+                    0
+                ) as unique_counterparties,
+                (
+                    SELECT ve.protocol FROM verified_events ve 
+                    WHERE ve.agent_id = oa.agent_id AND ve.verified = TRUE 
+                    ORDER BY ve.created_at DESC LIMIT 1
+                ) as last_rail
+            FROM observer_agents oa
+            ORDER BY oa.verified DESC, oa.created_at ASC
+        """)
+        agents = cursor.fetchall()
+        
+        result = []
+        for agent in agents:
+            result.append({
+                "agent_id": agent["agent_id"],
+                "agent_name": agent["agent_name"],
+                "alias": agent["alias"],
+                "framework": agent["framework"],
+                "verified": agent["verified"],
+                "verified_at": agent["verified_at"].isoformat() if agent["verified_at"] else None,
+                "created_at": agent["created_at"].isoformat() if agent["created_at"] else None,
+                "legal_entity_id": agent["legal_entity_id"],
+                "total_transactions": agent["tx_count"],
+                "unique_counterparties": agent["unique_counterparties"],
+                "last_rail": agent["last_rail"] or "L402",
+                "success_rate": 1.0 if agent["verified"] else 0.0
+            })
+        
+        return {"agents": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @app.get("/observer/agents/{agent_id}")
 def get_agent_profile(agent_id: str):
     """Public agent profile — name, verification status, event count, first seen."""
