@@ -26,15 +26,72 @@ from crypto_verification import (
     cache_public_key, 
     get_cached_public_key,
     detect_key_type,
-    get_cached_key_type
+    get_cached_key_type,
+    persist_public_key,
+    load_all_public_keys_from_db,
+    get_public_key,
+    verify_public_key_signature
 )
 
 # Import VAC and Partner Registry modules
 from vac_generator import VACGenerator, VAC_MAX_AGE_DAYS, VAC_REFRESH_HOURS
 from partner_registry import PartnerRegistry, register_corpo_partner, issue_corpo_attestation
 
+# Import Organization Registry modules (Phase 1: Organizational Attestation)
+sys.path.insert(0, '/home/futurebit/.openclaw/workspace/observer-protocol-repo')
+from organization_models import (
+    OrganizationRegistrationRequest,
+    OrganizationRevocationRequest
+)
+from organization_registry import (
+    OrganizationRegistry,
+    OrganizationAlreadyExistsError,
+    OrganizationNotFoundError,
+    OrganizationRevokedError
+)
+
 # Flag for crypto availability - cryptography library is confirmed available
 ECDSA_AVAILABLE = True
+
+# Initialize organization registry
+org_registry = OrganizationRegistry()
+
+# OWS (Open Wallet Standard) Constants and Validation
+OWS_VALID_CHAINS = {"evm", "solana", "bitcoin"}
+OWS_KEY_PREFIXES = ["02", "03", "04"]  # Compressed/uncompressed secp256k1
+OWS_ED25519_LENGTH = 32  # Ed25519 public key length in bytes (base58 encoded)
+
+def validate_ows_key_format(public_key: str, wallet_standard: Optional[str] = None) -> tuple[bool, str]:
+    """Validate OWS key format with meaningful error messages"""
+    if not public_key or len(public_key) < 32:
+        return False, "Public key must be at least 32 characters long"
+    
+    if wallet_standard == "ows":
+        # Check for valid base58 characters (common in Solana/OWS keys)
+        import re
+        base58_pattern = re.compile(r'^[1-9A-HJ-NP-Za-km-z]+$')
+        if not base58_pattern.match(public_key):
+            return False, "OWS public key must be valid base58 encoded string"
+        
+        # Check length (typical Ed25519 public key is 32 bytes = ~44 chars base58)
+        if len(public_key) < 40 or len(public_key) > 50:
+            return False, f"OWS Ed25519 public key should be 40-50 chars (got {len(public_key)})"
+    
+    return True, ""
+
+def validate_chains(chains: Optional[List[str]]) -> tuple[bool, str]:
+    """Validate OWS chains parameter"""
+    if chains is None:
+        return True, ""
+    
+    if not isinstance(chains, list):
+        return False, "chains must be an array of strings"
+    
+    invalid_chains = [c for c in chains if c not in OWS_VALID_CHAINS]
+    if invalid_chains:
+        return False, f"Invalid chain(s): {', '.join(invalid_chains)}. Valid: {', '.join(OWS_VALID_CHAINS)}"
+    
+    return True, ""
 
 
 class AgentUpdateRequest(BaseModel):
@@ -137,6 +194,18 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def startup_event():
+    """Load public keys from database on startup."""
+    print("Loading public keys from database...")
+    try:
+        loaded = load_all_public_keys_from_db()
+        print(f"✓ Loaded {len(loaded)} public keys into memory cache")
+    except Exception as e:
+        print(f"Warning: Could not load public keys from database: {e}")
+        print("  This is expected if the migration hasn't been run yet.")
 
 def get_db_connection():
     """Get database connection."""
@@ -366,9 +435,38 @@ def register_agent(
     agent_name: Optional[str] = None,
     framework: Optional[str] = None,
     alias: Optional[str] = None,
-    legal_entity_id: Optional[str] = None
+    legal_entity_id: Optional[str] = None,
+    wallet_standard: Optional[str] = None,
+    ows_vault_name: Optional[str] = None,
+    chains: Optional[str] = None
 ):
-    """Register a new agent with the Observer Protocol."""
+    """Register a new agent with the Observer Protocol.
+    
+    OWS (Open Wallet Standard) Support:
+    - wallet_standard: Set to "ows" for OWS-compatible agents
+    - ows_vault_name: Name of the OWS vault
+    - chains: JSON array string of supported chains ["evm", "solana", "bitcoin"]
+    """
+    # Validate OWS key format if wallet_standard is provided
+    if wallet_standard:
+        is_valid, error_msg = validate_ows_key_format(public_key, wallet_standard)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"Invalid OWS key format: {error_msg}")
+    
+    # Parse and validate chains if provided
+    chains_list = None
+    if chains:
+        import json
+        try:
+            chains_list = json.loads(chains)
+            if not isinstance(chains_list, list):
+                raise HTTPException(status_code=400, detail="chains must be a JSON array")
+            is_valid, error_msg = validate_chains(chains_list)
+            if not is_valid:
+                raise HTTPException(status_code=400, detail=error_msg)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="chains must be valid JSON array string")
+    
     # Generate agent_id as SHA256 hash of public_key
     agent_id = hashlib.sha256(public_key.encode()).hexdigest()[:32]
     public_key_hash = hashlib.sha256(public_key.encode()).hexdigest()
@@ -378,22 +476,26 @@ def register_agent(
 
     try:
         cursor.execute("""
-            INSERT INTO observer_agents (agent_id, public_key_hash, agent_name, alias, framework, legal_entity_id, verified, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+            INSERT INTO observer_agents (agent_id, public_key_hash, agent_name, alias, framework, legal_entity_id, verified, created_at, public_key, wallet_standard, ows_vault_name, chains)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s)
             ON CONFLICT (agent_id) DO UPDATE SET
                 agent_name = EXCLUDED.agent_name,
                 alias = EXCLUDED.alias,
                 framework = EXCLUDED.framework,
-                legal_entity_id = EXCLUDED.legal_entity_id
+                legal_entity_id = EXCLUDED.legal_entity_id,
+                wallet_standard = EXCLUDED.wallet_standard,
+                ows_vault_name = EXCLUDED.ows_vault_name,
+                chains = EXCLUDED.chains
             RETURNING agent_id
-        """, (agent_id, public_key_hash, agent_name, alias or agent_name, framework, legal_entity_id, False))
+        """, (agent_id, public_key_hash, agent_name, alias or agent_name, framework, legal_entity_id, False, public_key, wallet_standard, ows_vault_name, json.dumps(chains_list) if chains_list else None))
         
         conn.commit()
 
-        # Cache the public key for verification (temporary until DB schema updated)
-        cache_public_key(agent_id, public_key)
+        # Persist the public key to database (and cache in memory)
+        persist_public_key(agent_id, public_key, verified=False)
         
-        return {
+        # Build response with OWS badge if applicable
+        response = {
             "agent_id": agent_id,
             "agent_name": agent_name,
             "verification_status": "registered",
@@ -407,6 +509,17 @@ def register_agent(
             "badge_url": f"https://api.agenticterminal.ai/observer/badge/{agent_id}.svg",
             "profile_url": f"https://observerprotocol.org/agents/{agent_id}"
         }
+        
+        # Add OWS fields to response
+        if wallet_standard:
+            response["wallet_standard"] = wallet_standard
+            response["ows_badge"] = wallet_standard == "ows"
+        if ows_vault_name:
+            response["ows_vault_name"] = ows_vault_name
+        if chains_list:
+            response["chains"] = chains_list
+            
+        return response
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
@@ -734,7 +847,15 @@ def submit_transaction(
     signature: str,
     optional_metadata: Optional[str] = None
 ):
-    """Submit a verified transaction to the Observer Protocol."""
+    """Submit a verified transaction to the Observer Protocol.
+    
+    Security: All transactions must be cryptographically signed.
+    The signature is verified against the agent's stored public key.
+    """
+    # Verify signature is present
+    if not signature or len(signature) == 0:
+        raise HTTPException(status_code=400, detail="Missing required parameter: signature")
+    
     conn = get_db_connection()
     cursor = conn.cursor()
     
@@ -749,6 +870,41 @@ def submit_transaction(
             raise HTTPException(status_code=404, detail="Agent not found")
         if not result[0]:
             raise HTTPException(status_code=403, detail="Agent not verified")
+        
+        # Verify the transaction signature
+        # Create canonical message from transaction data (consistent format)
+        message_data = {
+            "agent_id": agent_id,
+            "protocol": protocol,
+            "transaction_reference": transaction_reference,
+            "timestamp": timestamp
+        }
+        
+        # Add metadata to message if present
+        if optional_metadata:
+            try:
+                import json
+                metadata = json.loads(optional_metadata)
+                # Only include specific fields in the signature verification
+                # to avoid issues with extra fields
+                for key in ["amount_sats", "counterparty_id", "event_type", "direction"]:
+                    if key in metadata:
+                        message_data[key] = metadata[key]
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="Invalid JSON in optional_metadata")
+        
+        # Create canonical JSON for signing
+        message_json = json.dumps(message_data, sort_keys=True, separators=(',', ':'))
+        message_bytes = message_json.encode('utf-8')
+        
+        # Verify signature against stored public key
+        is_valid = verify_public_key_signature(message_bytes, signature, agent_id)
+        
+        if not is_valid:
+            raise HTTPException(
+                status_code=401, 
+                detail="Invalid signature. Transaction signature verification failed."
+            )
         
         # Determine amount_bucket from optional_metadata if provided
         amount_bucket = "unknown"
@@ -769,9 +925,7 @@ def submit_transaction(
                 pass
         
         # Generate event_id
-        cursor.execute("SELECT COUNT(*) FROM verified_events")
-        count = cursor.fetchone()[0]
-        event_id = f"event-{agent_id[:12]}-{count + 1:04d}"
+        event_id = f"event-{agent_id[:12]}-{str(uuid.uuid4())[:8]}"
         
         # Determine event_type and direction from metadata
         event_type = "payment.executed"
@@ -779,6 +933,7 @@ def submit_transaction(
         counterparty_id = None
         service_description = None
         preimage = None
+        amount_sats = None
         
         if optional_metadata:
             try:
@@ -789,6 +944,7 @@ def submit_transaction(
                 counterparty_id = metadata.get("counterparty_id")
                 service_description = metadata.get("service_description")
                 preimage = metadata.get("preimage")
+                amount_sats = metadata.get("amount_sats")  # ACTUAL AMOUNT
             except:
                 pass
         
@@ -890,20 +1046,14 @@ def get_feed(limit: int = 50):
                 ve.transaction_hash,
                 ve.time_window,
                 ve.amount_bucket,
+                COALESCE(ve.amount_sats, 21000) as amount_sats,
                 ve.direction,
                 ve.service_description,
                 ve.preimage,
                 ve.counterparty_id,
                 ve.verified,
                 ve.created_at,
-                oa.alias as agent_alias,
-                CASE 
-                    WHEN ve.amount_bucket = 'micro' THEN 21000
-                    WHEN ve.amount_bucket = 'small' THEN 100000
-                    WHEN ve.amount_bucket = 'medium' THEN 500000
-                    WHEN ve.amount_bucket = 'large' THEN 1000000
-                    ELSE 21000
-                END as amount_sats
+                oa.alias as agent_alias
             FROM verified_events ve
             LEFT JOIN observer_agents oa ON ve.agent_id = oa.agent_id
             ORDER BY ve.created_at DESC
@@ -1238,7 +1388,8 @@ def get_agent_profile(agent_id: str):
     try:
         cursor.execute("""
             SELECT agent_id, agent_name, alias, framework, legal_entity_id,
-                   verified, verified_at, created_at, access_level
+                   verified, verified_at, created_at, access_level,
+                   wallet_standard, ows_vault_name, chains
             FROM observer_agents WHERE agent_id = %s
         """, (agent_id,))
         agent = cursor.fetchone()
@@ -1257,7 +1408,8 @@ def get_agent_profile(agent_id: str):
         """, (agent["created_at"],))
         seq = cursor.fetchone()["seq"]
 
-        return {
+        # Build response with OWS fields
+        response = {
             "agent_id": agent_id,
             "agent_name": agent["agent_name"],
             "alias": agent["alias"],
@@ -1272,6 +1424,24 @@ def get_agent_profile(agent_id: str):
             "badge_url": f"https://api.agenticterminal.ai/observer/badge/{agent_id}.svg",
             "profile_url": f"https://observerprotocol.org/agents/{agent_id}"
         }
+        
+        # Add OWS fields if present
+        if agent.get("wallet_standard"):
+            response["wallet_standard"] = agent["wallet_standard"]
+            response["ows_badge"] = agent["wallet_standard"] == "ows"
+        if agent.get("ows_vault_name"):
+            response["ows_vault_name"] = agent["ows_vault_name"]
+        if agent.get("chains"):
+            import json
+            try:
+                chains = agent["chains"]
+                if isinstance(chains, str):
+                    chains = json.loads(chains)
+                response["chains"] = chains
+            except:
+                pass
+                
+        return response
     except HTTPException:
         raise
     except Exception as e:
@@ -1318,6 +1488,7 @@ def get_vac_credential(agent_id: str, include_extensions: bool = True):
     Returns the latest valid VAC credential including:
     - Core fields: aggregated transaction data, volume, counterparties, rails
     - Extensions: partner attestations and counterparty metadata hashes
+    - OWS fields: wallet_standard, ows_badge, ows_vault_name, chains
     
     VACs expire after 7 days and refresh automatically every 24 hours.
     """
@@ -1329,9 +1500,10 @@ def get_vac_credential(agent_id: str, include_extensions: bool = True):
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         try:
-            # Check if agent exists and is verified
+            # Check if agent exists and is verified, include OWS fields
             cursor.execute("""
-                SELECT agent_id, verified FROM observer_agents WHERE agent_id = %s
+                SELECT agent_id, verified, wallet_standard, ows_vault_name, chains, public_key, alias
+                FROM observer_agents WHERE agent_id = %s
             """, (agent_id,))
             
             agent = cursor.fetchone()
@@ -1363,7 +1535,36 @@ def get_vac_credential(agent_id: str, include_extensions: bool = True):
             if not vac:
                 raise HTTPException(status_code=404, detail="VAC not found")
             
-            return vac.to_dict()
+            # Get VAC as dict and add OWS fields
+            vac_dict = vac.to_dict()
+            
+            # Add OWS fields to VAC response
+            vac_dict["version"] = "1.0"
+            vac_dict["agent_id"] = agent_id
+            vac_dict["alias"] = agent.get("alias")
+            vac_dict["public_key"] = agent.get("public_key")
+            vac_dict["wallet_standard"] = agent.get("wallet_standard")
+            vac_dict["ows_badge"] = agent.get("wallet_standard") == "ows"
+            vac_dict["ows_vault_name"] = agent.get("ows_vault_name")
+            
+            # Parse chains JSON if present
+            if agent.get("chains"):
+                import json
+                try:
+                    chains = agent["chains"]
+                    if isinstance(chains, str):
+                        chains = json.loads(chains)
+                    vac_dict["chains"] = chains
+                except:
+                    vac_dict["chains"] = []
+            
+            vac_dict["credential_proof"] = {
+                "type": "ObserverProtocolVAC",
+                "issued_at": datetime.now(timezone.utc).isoformat(),
+                "issuer": "observerprotocol.org"
+            }
+            
+            return vac_dict
             
         finally:
             cursor.close()
@@ -1887,6 +2088,122 @@ def get_legal_entity_attestation(agent_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Legal entity retrieval failed: {str(e)}")
+
+
+# ============================================================
+# ORGANIZATION REGISTRY ENDPOINTS (Phase 1: Organizational Attestation)
+# ============================================================
+
+@app.post("/observer/register-org", status_code=201)
+def register_organization_endpoint(request: OrganizationRegistrationRequest):
+    """
+    Register a new organization in the Observer Protocol registry.
+    
+    Organizations are credential issuers (not agents) that can issue attestations
+    that agents include in their VAC credentials.
+    """
+    try:
+        result = org_registry.register_organization(
+            name=request.name,
+            domain=request.domain,
+            master_public_key=request.master_public_key,
+            revocation_public_key=request.revocation_public_key,
+            key_type=request.key_type,
+            display_name=request.display_name,
+            description=request.description,
+            contact_email=request.contact_email,
+            metadata=request.metadata or {}
+        )
+        return result
+    except OrganizationAlreadyExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Organization registration failed: {str(e)}")
+
+
+@app.get("/observer/orgs/{org_id}")
+def get_organization_endpoint(org_id: str, include_keys: bool = Query(False)):
+    """Get organization details by ID."""
+    try:
+        result = org_registry.get_organization(org_id, include_public_keys=include_keys)
+        return result
+    except OrganizationNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve organization: {str(e)}")
+
+
+@app.get("/observer/orgs/by-domain/{domain}")
+def get_organization_by_domain_endpoint(domain: str):
+    """Get organization by domain."""
+    try:
+        result = org_registry.get_organization_by_domain(domain)
+        return result
+    except OrganizationNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve organization: {str(e)}")
+
+
+@app.get("/observer/orgs/by-key/{key_hash}")
+def get_organization_by_key_hash_endpoint(key_hash: str):
+    """Get organization by public key hash (master or revocation)."""
+    try:
+        result = org_registry.get_organization_by_key_hash(key_hash)
+        return result
+    except OrganizationNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve organization: {str(e)}")
+
+
+@app.get("/observer/orgs")
+def list_organizations_endpoint(
+    status: Optional[str] = Query('active'),
+    verification_status: Optional[str] = Query(None),
+    domain: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0)
+):
+    """List organizations with optional filtering."""
+    try:
+        result = org_registry.list_organizations(
+            status=status,
+            verification_status=verification_status,
+            domain_filter=domain,
+            limit=limit,
+            offset=offset
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list organizations: {str(e)}")
+
+
+@app.post("/observer/orgs/{org_id}/revoke")
+def revoke_organization_endpoint(org_id: str, request: OrganizationRevocationRequest):
+    """Revoke an organization (soft delete)."""
+    try:
+        result = org_registry.revoke_organization(
+            org_id=org_id,
+            reason=request.reason,
+            revocation_signature=request.revocation_signature
+        )
+        return result
+    except OrganizationNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except OrganizationRevokedError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Revocation failed: {str(e)}")
+
+
+# ============================================================
+# END ORGANIZATION REGISTRY ENDPOINTS
+# ============================================================
 
 
 if __name__ == "__main__":
