@@ -5,7 +5,10 @@ Tests both hex-encoded keys and base58-encoded Solana addresses.
 """
 
 import sys
-sys.path.insert(0, '/home/futurebit/.openclaw/workspace/observer-protocol-repo')
+import os
+# Use environment variable for repo path, with sensible default
+OP_REPO_PATH = os.environ.get('OP_REPO_PATH', os.path.expanduser('~/.openclaw/workspace/observer-protocol-repo'))
+sys.path.insert(0, OP_REPO_PATH)
 
 from crypto_verification import (
     verify_ed25519_signature,

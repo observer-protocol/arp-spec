@@ -53,6 +53,22 @@ class OrganizationRegistry:
     2. OP does NOT verify real-world identity — just anchors the cryptographic attestation
     3. Separate revocation keypair from master keypair
     4. Registry entries must be queryable by org_id, domain, and public key hash
+    
+    TODO: Enterprise - Intra-Organization Permission Model
+    ======================================================
+    Future enhancement for enterprise deployments requiring granular
+    permission controls within organizations:
+    
+    - Role-based access control (RBAC) for org members
+    - Hierarchical departments/teams within organizations
+    - Delegated attestation issuance (sub-organizations)
+    - Cross-organization verification and trust establishment
+    - Multi-signature requirements for high-value attestations
+    - Audit trails for all organizational actions
+    - Integration with enterprise identity providers (SAML, OIDC)
+    
+    This is not required for Phase 1 but should be considered for
+    enterprise adoption roadmap.
     """
     
     def __init__(self, db_url: str = DB_URL):

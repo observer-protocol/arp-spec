@@ -8,7 +8,10 @@ Run with: python3 test_vac_simple.py
 
 import json
 import sys
-sys.path.insert(0, '/home/futurebit/.openclaw/workspace/observer-protocol')
+import os
+# Use environment variable for workspace path, with sensible default
+OP_WORKSPACE_PATH = os.environ.get('OP_WORKSPACE_PATH', os.path.expanduser('~/.openclaw/workspace/observer-protocol'))
+sys.path.insert(0, OP_WORKSPACE_PATH)
 
 from vac_generator import (
     VACCore,

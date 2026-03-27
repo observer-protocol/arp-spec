@@ -4,6 +4,94 @@ Partner Registry Module
 Observer Protocol VAC Specification v0.3
 
 Manages partner registration, verification, and attestation issuance.
+
+Partner Types and Trust Levels:
+===============================
+
+Partner types define the role and trust level of entities that can issue
+attestations attached to VAC (Verified Agent Credential) credentials.
+
+1. CORPO (Legal Entity Partner)
+   -----------------------------
+   Role: Legal entity verification and compliance attestation
+   
+   Corpo partners verify that an AI agent is operating under a legal entity
+   wrapper (e.g., corporation, LLC, DAO with legal personality). They attest
+   to the legal_entity_id associated with an agent.
+   
+   Trust Level: HIGH - Requires KYB (Know Your Business) verification
+   Typical Users: Law firms, compliance services, legal entity registrars
+   
+   Attestation Claims:
+   - legal_entity_id: Unique identifier for the legal entity
+   - jurisdiction: Legal jurisdiction (e.g., "US-DE", "CH", "KY")
+   - compliance_status: Current compliance state (e.g., "good_standing")
+   - entity_type: Type of legal entity (e.g., "C-Corp", "LLC", "DAO")
+
+2. VERIFIER (Identity/Credential Verifier)
+   ----------------------------------------
+   Role: Identity verification and credential validation
+   
+   Verifier partners attest to the identity verification level of an agent
+   or validate specific credentials held by the agent. They may perform
+   KYC (Know Your Customer) checks or verify professional certifications.
+   
+   Trust Level: MEDIUM-HIGH - Depends on verification methodology
+   Typical Users: Identity providers, KYC services, credential issuers
+   
+   Attestation Claims:
+   - verification_level: Level of identity verification performed
+   - verification_method: Method used (e.g., "document", "biometric")
+   - credentials: List of verified credentials held by agent
+   - expiry: When the verification expires
+
+3. COUNTERPARTY (Service Counterparty)
+   ------------------------------------
+   Role: Service relationship and transaction counterparty attestation
+   
+   Counterparty partners are entities that have engaged in economic
+   transactions with an agent. They can attest to the nature of their
+   relationship and the services provided. These attestations help
+   establish an agent's transaction history and reputation.
+   
+   Trust Level: MEDIUM - Based on transaction history and reputation
+   Typical Users: Service providers, marketplaces, other AI agents
+   
+   Attestation Claims:
+   - service_type: Type of service provided/received
+   - relationship_start: When the relationship began
+   - transaction_volume: Aggregate transaction volume
+   - rating: Reputation score or rating
+   
+   Note: Counterparty metadata is stored as hashes anchored to VAC
+   credentials for privacy. Actual metadata may be stored off-chain.
+
+4. INFRASTRUCTURE (Infrastructure Provider)
+   -----------------------------------------
+   Role: Infrastructure and hosting verification
+   
+   Infrastructure partners attest to the technical infrastructure
+   supporting an agent's operation. This includes hosting providers,
+   compute providers, and security services.
+   
+   Trust Level: MEDIUM - Technical verification of infrastructure
+   Typical Users: Cloud providers, hosting services, security auditors
+   
+   Attestation Claims:
+   - hosting_provider: Name of infrastructure provider
+   - region: Geographic region of operation
+   - security_certifications: Security standards met (e.g., "SOC2", "ISO27001")
+   - uptime_sla: Service level agreement for availability
+
+Trust Level Summary:
+-------------------
+- Corpo: HIGH (legal entity verification)
+- Verifier: MEDIUM-HIGH (identity/credential verification)
+- Counterparty: MEDIUM (service relationship attestation)
+- Infrastructure: MEDIUM (technical infrastructure verification)
+
+All partner attestations are cryptographically signed and attached to
+VAC credentials as extensions per VAC v0.3 specification.
 """
 
 import json
@@ -14,7 +102,10 @@ from typing import Optional, List, Dict, Any
 import psycopg2
 import psycopg2.extras
 import sys
-sys.path.insert(0, '/home/futurebit/.openclaw/workspace/observer-protocol')
+import os
+# Use environment variable for workspace path, with sensible default
+OP_WORKSPACE_PATH = os.environ.get('OP_WORKSPACE_PATH', os.path.expanduser('~/.openclaw/workspace/observer-protocol'))
+sys.path.insert(0, OP_WORKSPACE_PATH)
 from crypto_verification import (
     verify_signature,
     detect_key_type,

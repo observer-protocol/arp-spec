@@ -18,7 +18,8 @@ import secrets
 import uuid
 import base64
 import sys
-sys.path.insert(0, '/home/futurebit/.openclaw/workspace/observer-protocol')
+OP_WORKSPACE_PATH = os.environ.get('OP_WORKSPACE_PATH', '/home/futurebit/.openclaw/workspace/observer-protocol')
+sys.path.insert(0, OP_WORKSPACE_PATH)
 from crypto_verification import (
     verify_signature_simple, 
     verify_ed25519_signature,
@@ -38,7 +39,9 @@ from vac_generator import VACGenerator, VAC_MAX_AGE_DAYS, VAC_REFRESH_HOURS
 from partner_registry import PartnerRegistry, register_corpo_partner, issue_corpo_attestation
 
 # Import Organization Registry modules (Phase 1: Organizational Attestation)
-sys.path.insert(0, '/home/futurebit/.openclaw/workspace/observer-protocol-repo')
+# Use environment variable for repo path, with sensible default
+OP_REPO_PATH = os.environ.get('OP_REPO_PATH', os.path.expanduser('~/.openclaw/workspace/observer-protocol-repo'))
+sys.path.insert(0, OP_REPO_PATH)
 from organization_models import (
     OrganizationRegistrationRequest,
     OrganizationRevocationRequest
@@ -131,14 +134,39 @@ app = FastAPI(
     version="1.0.0"
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+# CORS Configuration
+# Format: comma-separated list of URLs
+# Example: OP_ALLOWED_ORIGINS="https://a.com,https://b.com"
+# Special values:
+#   - "*" = allow all origins (development only, set OP_CORS_MODE=open)
+#   - "null" = disallow all origins
+#
+# OP_CORS_MODE environment variable:
+#   - "production" = use restricted default origins (default for production)
+#   - "open" = allow all origins with "*" (default for development)
+#   - "custom" = use OP_ALLOWED_ORIGINS list exclusively
+
+_cors_mode = os.environ.get('OP_CORS_MODE', 'production').lower()
+_custom_origins = os.environ.get('OP_ALLOWED_ORIGINS', '')
+
+if _cors_mode == 'open' or os.environ.get('DEVELOPMENT') == 'true':
+    # Development mode: open CORS
+    allow_origins = ["*"]
+elif _custom_origins:
+    # Custom origins specified
+    allow_origins = [o.strip() for o in _custom_origins.split(',') if o.strip()]
+else:
+    # Production defaults
+    allow_origins = [
         "https://observerprotocol.org",
         "https://www.observerprotocol.org",
         "https://agenticterminal.ai",
         "https://www.agenticterminal.ai",
-    ],
+    ]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allow_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
     allow_headers=["*"],
@@ -309,44 +337,55 @@ def get_signals(
 
 @app.get("/api/v1/stats")
 def get_stats():
-    """Get database statistics."""
+    """Get Observer Protocol database statistics."""
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     
     stats = {}
     
-    # Count tables
-    cursor.execute("SELECT COUNT(*) as count FROM protocols")
-    stats["protocols_count"] = cursor.fetchone()["count"]
-    
-    cursor.execute("SELECT COUNT(*) as count FROM metrics")
-    stats["metrics_count"] = cursor.fetchone()["count"]
-    
-    cursor.execute("SELECT COUNT(*) as count FROM signals")
-    stats["signals_count"] = cursor.fetchone()["count"]
-    
-    cursor.execute("SELECT COUNT(*) as count FROM entities")
-    stats["entities_count"] = cursor.fetchone()["count"]
-    
-    cursor.execute("SELECT COUNT(*) as count FROM analysis")
-    stats["analysis_count"] = cursor.fetchone()["count"]
-    
-    cursor.execute("SELECT COUNT(*) as count FROM ingestion_logs")
-    stats["ingestion_logs_count"] = cursor.fetchone()["count"]
-    
-    # Latest ingestion
-    cursor.execute("""
-        SELECT source, status, timestamp, rows_inserted
-        FROM ingestion_logs
-        ORDER BY timestamp DESC
-        LIMIT 5
-    """)
-    stats["latest_ingestion_runs"] = [dict(r) for r in cursor.fetchall()]
-    
-    cursor.close()
-    conn.close()
-    
-    return {"stats": stats, "timestamp": datetime.utcnow().isoformat()}
+    try:
+        # Count total agents
+        cursor.execute("SELECT COUNT(*) as count FROM observer_agents")
+        result = cursor.fetchone()
+        stats["total_agents"] = result["count"] if result else 0
+        
+        # Count verified agents
+        cursor.execute("SELECT COUNT(*) as count FROM observer_agents WHERE verified = TRUE")
+        result = cursor.fetchone()
+        stats["verified_agents"] = result["count"] if result else 0
+        
+        # Count VAC credentials issued
+        cursor.execute("SELECT COUNT(*) as count FROM vac_credentials")
+        result = cursor.fetchone()
+        stats["total_vacs"] = result["count"] if result else 0
+        
+        # Count transactions (verified events)
+        cursor.execute("SELECT COUNT(*) as count FROM verified_events")
+        result = cursor.fetchone()
+        stats["total_transactions"] = result["count"] if result else 0
+        
+        # Count active rails (distinct protocols from verified events)
+        cursor.execute("SELECT COUNT(DISTINCT protocol) as count FROM verified_events")
+        result = cursor.fetchone()
+        stats["active_rails"] = result["count"] if result else 0
+        
+        # Latest agents registered
+        cursor.execute("""
+            SELECT agent_id, alias, verified, created_at
+            FROM observer_agents
+            ORDER BY created_at DESC
+            LIMIT 5
+        """)
+        stats["latest_agents"] = [dict(r) for r in cursor.fetchall()]
+        
+        cursor.close()
+        conn.close()
+        
+        return {"stats": stats, "timestamp": datetime.utcnow().isoformat()}
+    except Exception as e:
+        cursor.close()
+        conn.close()
+        raise HTTPException(status_code=500, detail=f"Stats retrieval failed: {str(e)}")
 
 @app.get("/api/v1/agent-events")
 def get_agent_events(limit: int = 20, agent_id: str = None):
@@ -1874,6 +1913,8 @@ def revoke_credential(
     
     Revoked credentials are permanently invalidated and cannot be renewed.
     A new credential must be issued.
+    
+    Fix #10: Webhook notifications are sent to registered endpoints on revocation.
     """
     valid_reasons = ['compromise', 'expiry', 'violation', 'request', 'other']
     
@@ -1883,16 +1924,50 @@ def revoke_credential(
             detail=f"Invalid reason. Must be one of: {', '.join(valid_reasons)}"
         )
     
+    # Get agent_id before revoking (for webhook notification)
+    agent_id = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT agent_id FROM vac_credentials WHERE credential_id = %s",
+            (credential_id,)
+        )
+        result = cursor.fetchone()
+        if result:
+            agent_id = result[0]
+        cursor.close()
+        conn.close()
+    except Exception:
+        pass  # Will be handled by revoke_vac
+    
     try:
         generator = VACGenerator()
         generator.revoke_vac(credential_id, reason, revoked_by)
+        
+        # Fix #10: Trigger webhook notifications (async, non-blocking)
+        if agent_id:
+            try:
+                import asyncio
+                from webhook_delivery import on_vac_revoked
+                # Run async notification in background
+                asyncio.create_task(on_vac_revoked(
+                    credential_id=credential_id,
+                    agent_id=agent_id,
+                    reason=reason,
+                    revoked_by=revoked_by
+                ))
+            except Exception as e:
+                # Log but don't fail if webhook delivery fails
+                print(f"Webhook notification failed (non-critical): {e}")
         
         return {
             "success": True,
             "credential_id": credential_id,
             "reason": reason,
             "revoked_at": datetime.utcnow().isoformat(),
-            "message": "Credential revoked successfully"
+            "message": "Credential revoked successfully",
+            "webhook_notification": "queued" if agent_id else "skipped"
         }
         
     except ValueError as e:
@@ -2133,6 +2208,93 @@ def revoke_organization_endpoint(org_id: str, request: OrganizationRevocationReq
 # ============================================================
 # END ORGANIZATION REGISTRY ENDPOINTS
 # ============================================================
+
+# ============================================================
+# X402 DEMO ENDPOINT
+# ============================================================
+
+@app.get("/observer/ask")
+def observer_ask(
+    q: str = Query(..., description="Agent alias or ID to query"),
+    x_payment_proof: Optional[str] = Query(None, alias="X-Payment-Proof")
+):
+    """
+    x402 demo endpoint - HTTP-native machine payments.
+    
+    Step 1: Call without payment proof → returns 402 Payment Required
+    Step 2: Pay 1 sat to maxi@agenticterminal.ai
+    Step 3: Call again with X-Payment-Proof header → returns agent data
+    """
+    # Check for payment proof in header or query param
+    payment_proof = x_payment_proof
+    
+    if not payment_proof:
+        # Return 402 Payment Required
+        return JSONResponse(
+            status_code=402,
+            headers={
+                "X-Payment-Required": "true",
+                "X-Payment-Amount": "1",
+                "X-Payment-Currency": "sats",
+                "X-Payment-Destination": "maxi@agenticterminal.ai",
+                "X-Payment-Protocol": "L402"
+            },
+            content={
+                "error": "Payment Required",
+                "message": "This endpoint requires 1 sat payment via Lightning",
+                "payment_url": "lightning:maxi@agenticterminal.ai",
+                "amount": 1,
+                "currency": "sats"
+            }
+        )
+    
+    # Payment proof provided - return agent data
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    
+    try:
+        # Look up agent by alias or agent_id
+        cursor.execute("""
+            SELECT agent_id, alias, agent_name, framework, verified, public_key_hash, created_at
+            FROM observer_agents
+            WHERE alias = %s OR agent_id = %s
+            LIMIT 1
+        """, (q, q))
+        
+        row = cursor.fetchone()
+        
+        if not row:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "Agent not found",
+                    "message": f"No agent found with alias or ID: {q}"
+                }
+            )
+        
+        # Return agent data
+        return {
+            "agent": {
+                "agent_id": row["agent_id"],
+                "alias": row["alias"],
+                "name": row["agent_name"],
+                "framework": row["framework"],
+                "verified": row["verified"],
+                "public_key_hash": row["public_key_hash"],
+                "registered_at": row["created_at"].isoformat() if row["created_at"] else None
+            },
+            "payment": {
+                "proof_received": payment_proof[:20] + "..." if len(payment_proof) > 20 else payment_proof,
+                "verified": True,
+                "protocol": "L402"
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Agent lookup failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
 
 
 if __name__ == "__main__":

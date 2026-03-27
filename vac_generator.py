@@ -19,7 +19,10 @@ import psycopg2.extras
 
 # Import crypto verification functions
 import sys
-sys.path.insert(0, '/home/futurebit/.openclaw/workspace/observer-protocol')
+import os
+# Use environment variable for workspace path, with sensible default
+OP_WORKSPACE_PATH = os.environ.get('OP_WORKSPACE_PATH', os.path.expanduser('~/.openclaw/workspace/observer-protocol'))
+sys.path.insert(0, OP_WORKSPACE_PATH)
 from crypto_verification import (
     detect_key_type,
     cache_public_key
@@ -251,6 +254,8 @@ class VACGenerator:
         
         try:
             # Get transaction aggregates
+            # Fix #12: Use bucket midpoints when actual amount is not available
+            # Bucket midpoints: micro=500, small=5500, medium=55000, large=500000
             cursor.execute("""
                 SELECT 
                     COUNT(*) as total_transactions,
@@ -258,6 +263,10 @@ class VACGenerator:
                         CASE 
                             WHEN metadata->>'amount_sats' IS NOT NULL 
                             THEN (metadata->>'amount_sats')::bigint 
+                            WHEN amount_bucket = 'micro' THEN 500
+                            WHEN amount_bucket = 'small' THEN 5500
+                            WHEN amount_bucket = 'medium' THEN 55000
+                            WHEN amount_bucket = 'large' THEN 500000
                             ELSE 0 
                         END
                     ), 0) as total_volume_sats,

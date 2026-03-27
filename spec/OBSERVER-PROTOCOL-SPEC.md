@@ -1,11 +1,12 @@
-# VAC Specification v0.3
+# VAC Specification v0.3.1
 ## Verified Agent Credential
 
 **Status:** Draft  
-**Version:** 0.3  
-**Date:** 2026-03-23  
+**Version:** 0.3.1  
+**Date:** 2026-03-27  
 **License:** CC BY 4.0  
 **Authors:** Observer Protocol contributors  
+**Changelog:** See §12  
 
 ---
 
@@ -461,7 +462,202 @@ https://api.agenticterminal.ai
 
 ---
 
-## 8. Known Limitations (v0.3)
+## 8. Attestation Scoping & Hybrid Trust Model (v0.3)
+
+### 8.1 Trust Levels
+
+VAC v0.3 introduces a **5-level trust hierarchy** for attestations:
+
+| Level | Name | Description | Use Case |
+|-------|------|-------------|----------|
+| **LEVEL_0** | No Attestation / Revoked | No valid attestation exists or attestation has been revoked | Initial state or after revocation |
+| **LEVEL_1** | Self-Attested | Claims made by the agent itself without external verification | Bootstrapping, personal claims |
+| **LEVEL_2** | Counterparty Attested | Claims attested by transaction counterparties with cryptographic signatures | Transaction-based reputation |
+| **LEVEL_3** | Partner Attested | Claims attested by registered protocol partners (KYB verified) | Business verification |
+| **LEVEL_4** | Organization Attested | Claims attested by registered organizations with legal entity backing | Enterprise verification |
+| **LEVEL_5** | OP Verified | Claims directly verified by Observer Protocol with protocol-level cryptographic proof | Maximum trust |
+
+### 8.2 Attestation Scopes
+
+Attestations can cover different aspects of an agent:
+
+| Scope | Description | Typical Attester |
+|-------|-------------|------------------|
+| **IDENTITY** | Identity verification (who is this agent) | OP, Verifier partners |
+| **LEGAL_ENTITY** | Legal entity wrapper and compliance | Corpo partners |
+| **COMPLIANCE** | Regulatory compliance status | Verifier partners |
+| **REPUTATION** | Reputation score and history | OP, Counterparties |
+| **CAPABILITY** | Technical capabilities and features | Infrastructure partners |
+| **TRANSACTION** | Transaction history verification | OP, Counterparties |
+| **INFRASTRUCTURE** | Infrastructure provider verification | Infrastructure partners |
+| **CUSTOM** | Custom attestation scopes | Any partner type |
+
+### 8.3 Hybrid Trust Model
+
+The hybrid model combines on-chain and off-chain verification:
+
+**On-Chain (Cryptographic):**
+- Ed25519/SECP256k1 signatures
+- SHA256 hash commitments
+- Merkle root anchoring
+- Immutable revocation registry
+
+**Off-Chain (Operational):**
+- Partner KYB verification
+- Legal entity checks
+- Reputation score computation
+- Webhook notifications
+
+### 8.4 Attestation Structure
+
+```json
+{
+  "attestation": {
+    "agent_id": "agent_123",
+    "trust_level": 3,
+    "scope": "legal_entity",
+    "claims": {
+      "legal_entity_id": "CORP-456",
+      "jurisdiction": "Delaware"
+    },
+    "attester": {
+      "type": "partner",
+      "id": "partner_789",
+      "name": "LegalVerify Inc."
+    },
+    "proof": {
+      "signature": "hex_signature",
+      "signer_public_key": "hex_pubkey",
+      "timestamp": "2026-03-27T14:00:00Z",
+      "hash_algorithm": "sha256"
+    },
+    "on_chain_anchor": {
+      "tx_hash": "0xabc...",
+      "block_number": 12345678,
+      "merkle_root": "sha256_hash"
+    }
+  }
+}
+```
+
+### 8.5 Validation Rules
+
+Attestations are validated according to their trust level:
+
+**LEVEL_1 (Self-Attested):**
+- Must include agent signature
+- No external verification required
+- Lower weight in trust calculations
+
+**LEVEL_2-4 (Partner/Org Attested):**
+- Must include attester signature
+- Attester must be registered and verified
+- Attestation must not be expired
+- Attester must have appropriate scope permissions
+
+**LEVEL_5 (OP Verified):**
+- Must include OP protocol signature
+- Full cryptographic verification required
+- Highest weight in trust calculations
+
+---
+
+## 9. Webhook Delivery on Revocation
+
+### 9.1 Webhook Configuration
+
+Partners can configure webhooks to receive revocation notifications:
+
+```json
+{
+  "webhook": {
+    "url": "https://partner.example.com/webhooks/op-revocation",
+    "secret": "whsec_...",
+    "events": ["vac.revoked", "attestation.revoked"],
+    "retry_policy": {
+      "max_retries": 5,
+      "backoff_seconds": [1, 2, 4, 8, 16]
+    }
+  }
+}
+```
+
+### 9.2 Webhook Payload
+
+```json
+{
+  "event": "vac.revoked",
+  "timestamp": "2026-03-27T14:00:00Z",
+  "data": {
+    "revocation_id": "rev_abc123",
+    "credential_id": "vac_agent123_...",
+    "agent_id": "agent_123",
+    "revoked_at": "2026-03-27T14:00:00Z",
+    "reason": "compromise",
+    "reason_details": "Private key compromised in security incident",
+    "previous_attestations": ["att_1", "att_2"]
+  },
+  "signature": "hmac_sha256_signature"
+}
+```
+
+### 9.3 Signature Verification
+
+Webhooks are signed with HMAC-SHA256:
+
+```
+Signature = HMAC-SHA256(secret, timestamp + "." + payload)
+```
+
+Partners must verify the signature to ensure authenticity.
+
+### 9.4 Delivery Guarantees
+
+- **At-least-once delivery**: Webhooks may be delivered multiple times
+- **Idempotency**: Use `revocation_id` to deduplicate
+- **Retry logic**: Exponential backoff up to 5 retries
+- **Timeout**: 30 second timeout per delivery attempt
+
+---
+
+## 10. Environment Configuration
+
+### 10.1 CORS Configuration
+
+CORS is configurable via environment variables:
+
+| Variable | Values | Default | Description |
+|----------|--------|---------|-------------|
+| `OP_CORS_MODE` | `open`, `production` | `production` | CORS mode |
+| `OP_ALLOWED_ORIGINS` | Comma-separated URLs | `*` (if open) | Allowed origins |
+
+**Development Mode:**
+```bash
+OP_CORS_MODE=open
+# Allows all origins
+```
+
+**Production Mode:**
+```bash
+OP_CORS_MODE=production
+OP_ALLOWED_ORIGINS=https://observerprotocol.org,https://www.observerprotocol.org
+```
+
+### 10.2 File Paths
+
+All file paths are configurable via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OP_WORKSPACE_PATH` | `.` | Base workspace directory |
+| `OP_REPO_PATH` | `.` | Repository root path |
+| `OP_DATA_PATH` | `./data` | Data storage directory |
+
+No hardcoded `/home/futurebit/` paths remain in the codebase.
+
+---
+
+## 11. Known Limitations (v0.3)
 
 - IPFS integration requires external pinning service
 - Merkle root calculation is simplified (not full binary tree)
@@ -514,6 +710,49 @@ https://api.agenticterminal.ai
 
 ---
 
-*VAC v0.3 — March 2026*  
+## 12. Changelog
+
+### v0.3.1 (2026-03-27)
+
+**New Features:**
+- **Attestation Scoping**: 5-level trust hierarchy (LEVEL_0 to LEVEL_5)
+- **Hybrid Trust Model**: Combined on-chain/off-chain verification
+- **Attestation Scopes**: 8 scope types (identity, legal_entity, compliance, etc.)
+- **Webhook Delivery**: Async webhook notifications on VAC revocation
+- **CORS Configuration**: Environment-based CORS (open/production modes)
+- **E2E Protocol Tests**: Full end-to-end test suite
+
+**Improvements:**
+- **UUID4 for event_id**: All events use cryptographically secure UUID4
+- **Bucket Midpoints**: Fixed total_volume_sats calculation with proper bucket midpoints
+- **Code Quality**: Removed dead code (verify_ecdsa_signature)
+- **Path Configuration**: All paths use environment variables (no hardcoded paths)
+
+**Bug Fixes:**
+- Fixed hardcoded `/home/futurebit/` paths across 10 files
+- Fixed CORS to be configurable via `OP_CORS_MODE` and `OP_ALLOWED_ORIGINS`
+- Fixed total_volume_sats aggregation using bucket midpoints
+- Fixed agent lookup endpoint (singular vs plural)
+
+**Security:**
+- All attestations include cryptographic proofs
+- Webhook signatures use HMAC-SHA256
+- Trust level validation enforced
+- Revocation registry is append-only
+
+### v0.3 (2026-03-23)
+
+**Initial VAC Specification:**
+- Core VAC structure (core + extensions)
+- Partner attestations framework
+- Counterparty metadata with hash anchoring
+- Credential lifecycle (issuance, refresh, expiration, revocation)
+- JSON Schema definition
+- API reference
+- Migration guide from ARP
+
+---
+
+*VAC v0.3.1 — March 2026*  
 *License: CC BY 4.0*  
 *Contribute: [github.com/observer-protocol/vac-spec](https://github.com/observer-protocol/vac-spec)*

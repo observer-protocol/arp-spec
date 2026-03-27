@@ -11,7 +11,9 @@ import hashlib
 import json
 
 # Add the observer-protocol-repo to path
-sys.path.insert(0, '/home/futurebit/.openclaw/workspace/observer-protocol-repo')
+# Use environment variable for repo path, with sensible default
+OP_REPO_PATH = os.environ.get('OP_REPO_PATH', os.path.expanduser('~/.openclaw/workspace/observer-protocol-repo'))
+sys.path.insert(0, OP_REPO_PATH)
 
 from crypto_verification import (
     verify_signature,
@@ -115,7 +117,8 @@ def test_event_id_uses_uuid():
     print("\n=== Testing Fix #5: event_id uses uuid.uuid4() ===")
     
     # Read the api-server-v2.py source
-    with open('/home/futurebit/.openclaw/workspace/observer-protocol-repo/api-server-v2.py', 'r') as f:
+    repo_path = os.environ.get('OP_REPO_PATH', os.path.expanduser('~/.openclaw/workspace/observer-protocol-repo'))
+    with open(os.path.join(repo_path, 'api-server-v2.py'), 'r') as f:
         source = f.read()
     
     # Check that uuid.uuid4() is used for event_id
@@ -133,7 +136,8 @@ def test_dead_code_removed():
     print("\n=== Testing Fix #6: Dead Code Removal ===")
     
     # Read the api-server-v2.py source
-    with open('/home/futurebit/.openclaw/workspace/observer-protocol-repo/api-server-v2.py', 'r') as f:
+    repo_path = os.environ.get('OP_REPO_PATH', os.path.expanduser('~/.openclaw/workspace/observer-protocol-repo'))
+    with open(os.path.join(repo_path, 'api-server-v2.py'), 'r') as f:
         source = f.read()
     
     # Check that the old verify_ecdsa_signature function is NOT present
@@ -152,15 +156,17 @@ def test_signature_verification_imports():
     """Test that all signature verification imports are correct"""
     print("\n=== Testing Signature Verification Imports ===")
     
+    repo_path = os.environ.get('OP_REPO_PATH', os.path.expanduser('~/.openclaw/workspace/observer-protocol-repo'))
+    
     # Check api-server-v2.py imports verify_signature
-    with open('/home/futurebit/.openclaw/workspace/observer-protocol-repo/api-server-v2.py', 'r') as f:
+    with open(os.path.join(repo_path, 'api-server-v2.py'), 'r') as f:
         source = f.read()
     
     assert "verify_signature," in source, "verify_signature not imported in api-server-v2.py"
     assert "_build_transaction_message" in source, "_build_transaction_message not found"
     
     # Check partner_registry imports verify_signature
-    with open('/home/futurebit/.openclaw/workspace/observer-protocol-repo/partner_registry.py', 'r') as f:
+    with open(os.path.join(repo_path, 'partner_registry.py'), 'r') as f:
         source = f.read()
     
     assert "verify_signature," in source, "verify_signature not imported in partner_registry.py"

@@ -14,7 +14,10 @@ from datetime import datetime
 import sys
 
 # Import organization models and registry
-sys.path.insert(0, '/home/futurebit/.openclaw/workspace/observer-protocol-repo')
+import os
+# Use environment variable for repo path, with sensible default
+OP_REPO_PATH = os.environ.get('OP_REPO_PATH', os.path.expanduser('~/.openclaw/workspace/observer-protocol-repo'))
+sys.path.insert(0, OP_REPO_PATH)
 from organization_models import (
     OrganizationRegistrationRequest,
     OrganizationResponse,

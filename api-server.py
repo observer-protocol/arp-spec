@@ -1,6 +1,28 @@
 #!/usr/bin/env python3
 """
-Agentic Terminal API - FastAPI skeleton
+================================================================================
+⚠️  DEPRECATION NOTICE ⚠️
+================================================================================
+
+This file (api-server.py) is DEPRECATED and will be removed in a future release.
+
+Please use api-server-v2.py instead, which includes:
+- Full Observer Protocol VAC (Verified Agent Credential) support
+- Partner Registry for attestations
+- Organization Registry for organizational attestations
+- Corpo integration for legal entity verification
+- Improved cryptographic verification
+- Environment-based configuration (no hardcoded paths)
+
+Migration Path:
+1. Update your deployments to use api-server-v2.py
+2. Set required environment variables (see .env.example)
+3. Test all endpoints before removing v1
+
+Last Updated: 2026-03-27
+================================================================================
+
+Agentic Terminal API v1 - FastAPI skeleton (DEPRECATED)
 Canonical API for machine-native settlement systems data
 """
 
