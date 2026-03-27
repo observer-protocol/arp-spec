@@ -275,9 +275,15 @@ class PartnerRegistry:
                 json.dumps(attestation_data, sort_keys=True).encode()
             ).hexdigest()
             
-            # If no signature provided, partner must sign manually
+            # Bug #2 Fix: Verify attestation signature cryptographically
             if not attestation_signature:
                 raise ValueError("Attestation signature required")
+            
+            # Verify the attestation signature
+            attestation_hash_bytes = bytes.fromhex(attestation_hash)
+            is_valid = verify_signature(attestation_hash_bytes, attestation_signature, partner['public_key'])
+            if not is_valid:
+                raise ValueError("Attestation signature verification failed")
             
             # Insert attestation
             cursor.execute("""

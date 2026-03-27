@@ -290,6 +290,9 @@ def load_public_key_from_db(agent_id: str) -> str:
     """
     Load a public key from the database by agent_id.
     
+    Checks both the public_keys table and observer_agents table
+    for maximum compatibility.
+    
     Args:
         agent_id: The agent's unique ID
         
@@ -301,12 +304,25 @@ def load_public_key_from_db(agent_id: str) -> str:
         cursor = conn.cursor()
         
         try:
+            # First try the public_keys table
             cursor.execute("""
                 SELECT pubkey FROM public_keys WHERE agent_id = %s LIMIT 1
             """, (agent_id,))
             
             result = cursor.fetchone()
             if result:
+                public_key = result[0]
+                # Cache it
+                cache_public_key(agent_id, public_key)
+                return public_key
+            
+            # Fallback: try observer_agents table (Bug #1 fix)
+            cursor.execute("""
+                SELECT public_key FROM observer_agents WHERE agent_id = %s LIMIT 1
+            """, (agent_id,))
+            
+            result = cursor.fetchone()
+            if result and result[0]:
                 public_key = result[0]
                 # Cache it
                 cache_public_key(agent_id, public_key)
@@ -545,12 +561,22 @@ def cache_public_key(agent_id: str, public_key_hex: str):
     }
 
 def get_cached_public_key(agent_id: str) -> str:
-    """Get cached public key (returns just the key string)."""
+    """Get cached public key (returns just the key string).
+    
+    Falls back to database query on cache miss to ensure
+    keys persist across server restarts.
+    """
+    # Check memory cache first
     cached = _PUBLIC_KEY_CACHE.get(agent_id)
     if cached and isinstance(cached, dict):
         return cached.get('public_key')
     # Legacy support: plain string
-    return cached
+    if cached and isinstance(cached, str):
+        return cached
+    
+    # Cache miss - load from database
+    public_key = load_public_key_from_db(agent_id)
+    return public_key
 
 def get_cached_key_type(agent_id: str) -> str:
     """Get cached key type for an agent."""

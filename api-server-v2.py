@@ -105,73 +105,22 @@ class AgentUpdateRequest(BaseModel):
         extra = "forbid"  # Only allow specified fields
 
 
-def verify_ecdsa_signature(message: bytes, signature_hex: str, public_key_hex: str) -> bool:
+def _build_transaction_message(agent_id: str, transaction_reference: str, protocol: str, timestamp: str) -> bytes:
     """
-    Verify an ECDSA signature (SECP256k1) against a message and public key.
+    Build the canonical transaction message for signing.
+    
+    Format: "agent_id:transaction_reference:protocol:timestamp"
     
     Args:
-        message: The original message that was signed (bytes)
-        signature_hex: The signature in hex format (64 bytes raw r||s, or DER)
-        public_key_hex: The public key in hex format (33 bytes compressed or 65 bytes uncompressed)
-    
+        agent_id: The agent's unique ID
+        transaction_reference: The transaction hash or reference
+        protocol: The protocol used (e.g., 'lightning', 'ethereum')
+        timestamp: ISO format timestamp
+        
     Returns:
-        bool: True if signature is valid, False otherwise
+        bytes: The canonical message to be signed
     """
-    try:
-        # Decode signature
-        sig_bytes = bytes.fromhex(signature_hex)
-        
-        # Decode public key
-        public_key_bytes = bytes.fromhex(public_key_hex)
-        
-        # Load the public key
-        # Try uncompressed first (65 bytes starting with 04)
-        if len(public_key_bytes) == 65 and public_key_bytes[0] == 0x04:
-            # Uncompressed format: 04 || x || y (32 bytes each)
-            public_numbers = ec.EllipticCurvePublicNumbers(
-                x=int.from_bytes(public_key_bytes[1:33], 'big'),
-                y=int.from_bytes(public_key_bytes[33:65], 'big'),
-                curve=ec.SECP256K1()
-            )
-        elif len(public_key_bytes) == 33:
-            # Compressed format: 02/03 || x (32 bytes)
-            # Note: cryptography library may need uncompressed, so we'd need to decompress
-            # For now, we'll try but this might need additional handling
-            return False  # Compressed key support requires decompression
-        else:
-            return False  # Invalid public key format
-        
-        public_key = public_numbers.public_key()
-        
-        # Parse signature
-        if len(sig_bytes) == 64:
-            # Raw format: r || s
-            r = int.from_bytes(sig_bytes[:32], 'big')
-            s = int.from_bytes(sig_bytes[32:], 'big')
-            
-            # Convert to DER format for cryptography library
-            from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
-            signature_der = encode_dss_signature(r, s)
-        elif len(sig_bytes) >= 68 and len(sig_bytes) <= 72:
-            # Already DER format
-            signature_der = sig_bytes
-        else:
-            return False  # Invalid signature format
-        
-        # Verify the signature
-        public_key.verify(
-            signature_der,
-            message,
-            ec.ECDSA(hashes.SHA256())
-        )
-        
-        return True
-        
-    except InvalidSignature:
-        return False
-    except Exception as e:
-        print(f"Signature verification error: {e}")
-        return False
+    return f"{agent_id}:{transaction_reference}:{protocol}:{timestamp}".encode()
 
 
 DB_URL = "postgresql://agentic_terminal:at_secure_2026@localhost/agentic_terminal_db"
@@ -851,11 +800,11 @@ def submit_transaction(
     
     Security: All transactions must be cryptographically signed.
     The signature is verified against the agent's stored public key.
-    """
-    # Verify signature is present
-    if not signature or len(signature) == 0:
-        raise HTTPException(status_code=400, detail="Missing required parameter: signature")
     
+    Signing Format:
+        The agent must sign: "agent_id:transaction_reference:protocol:timestamp"
+        Example: "abc123:tx_hash_456:lightning:2024-01-15T10:30:00Z"
+    """
     conn = get_db_connection()
     cursor = conn.cursor()
     
@@ -871,40 +820,20 @@ def submit_transaction(
         if not result[0]:
             raise HTTPException(status_code=403, detail="Agent not verified")
         
-        # Verify the transaction signature
-        # Create canonical message from transaction data (consistent format)
-        message_data = {
-            "agent_id": agent_id,
-            "protocol": protocol,
-            "transaction_reference": transaction_reference,
-            "timestamp": timestamp
-        }
+        # Bug #0 Fix: Verify transaction signature cryptographically
+        if not signature:
+            raise HTTPException(status_code=400, detail="Transaction signature required")
         
-        # Add metadata to message if present
-        if optional_metadata:
-            try:
-                import json
-                metadata = json.loads(optional_metadata)
-                # Only include specific fields in the signature verification
-                # to avoid issues with extra fields
-                for key in ["amount_sats", "counterparty_id", "event_type", "direction"]:
-                    if key in metadata:
-                        message_data[key] = metadata[key]
-            except json.JSONDecodeError:
-                raise HTTPException(status_code=400, detail="Invalid JSON in optional_metadata")
+        public_key_hex = get_cached_public_key(agent_id)
+        if not public_key_hex:
+            raise HTTPException(status_code=400, detail="Public key not found")
         
-        # Create canonical JSON for signing
-        message_json = json.dumps(message_data, sort_keys=True, separators=(',', ':'))
-        message_bytes = message_json.encode('utf-8')
-        
-        # Verify signature against stored public key
-        is_valid = verify_public_key_signature(message_bytes, signature, agent_id)
+        # Build canonical message and verify signature
+        message = _build_transaction_message(agent_id, transaction_reference, protocol, timestamp)
+        is_valid = verify_signature(message, signature, public_key_hex)
         
         if not is_valid:
-            raise HTTPException(
-                status_code=401, 
-                detail="Invalid signature. Transaction signature verification failed."
-            )
+            raise HTTPException(status_code=400, detail="Transaction signature verification failed")
         
         # Determine amount_bucket from optional_metadata if provided
         amount_bucket = "unknown"

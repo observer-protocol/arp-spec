@@ -185,6 +185,19 @@ class VACGenerator:
         if not key:
             raise ValueError("OP_SIGNING_KEY environment variable not set")
         return key
+
+    def _load_op_public_key(self) -> str:
+        """Load OP public key from environment.
+
+        Bug #3 Fix: Use public key for verification, not private key.
+        Set OP_PUBLIC_KEY in environment (derive from OP_SIGNING_KEY once).
+        """
+        import os
+        public_key = os.environ.get('OP_PUBLIC_KEY')
+        if not public_key:
+            raise ValueError("OP_PUBLIC_KEY environment variable not set. "
+                           "Derive the public key from OP_SIGNING_KEY and set OP_PUBLIC_KEY.")
+        return public_key
     
     def _sign_vac(self, vac: VACCredential) -> str:
         """
@@ -527,6 +540,8 @@ class VACGenerator:
         """
         Verify a VAC credential's signature.
         
+        Bug #3 Fix: Use public key for verification, not private key.
+        
         Args:
             vac: The VAC credential to verify
             
@@ -551,8 +566,8 @@ class VACGenerator:
             signature=None
         )
         
-        # Get OP public key
-        op_public_key = self._load_op_signing_key()  # In production, load public key separately
+        # Bug #3 Fix: Use public key for verification
+        op_public_key = self._load_op_public_key()
         
         # Verify
         message = vac_copy.canonical_json().encode()
