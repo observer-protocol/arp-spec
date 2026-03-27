@@ -1,246 +1,245 @@
-# Observer Protocol Roadmap — Addressing Technical Review
+# Observer Protocol Roadmap
 
-**Date:** March 4, 2026  
-**Based on:** Feedback from arc0btc technical review  
-**Current Status:** MVP/alpha (launched Feb 22, 2026)
-
----
-
-## Phase 1: Immediate Fixes (Weeks 1-2)
-
-### 1.1 Fix "Stub Verification" UI/UX
-**Problem:** "Verified" badge implies cryptographic proof that doesn't exist yet  
-**Solution:** Update badge system to show stages:
-- **"Registered"** — Agent has registered, basic identity established
-- **"Verification Pending"** — Registered, awaiting cryptographic proof  
-- **"Verified"** — Full challenge-response verification complete
-
-**Files to update:**
-- Badge generation endpoint
-- API response for agent status
-- Web UI if applicable
-
-**Effort:** 1-2 days
-
-### 1.2 Documentation Transparency
-**Problem:** Whitepaper exists but may not be discoverable  
-**Solution:** 
-- Prominently link whitepaper in README
-- Add "Current Limitations" section to docs
-- Document MVP status clearly: "Registration working, cryptographic verification coming"
-
-**Effort:** 1 day
+**Date:** March 27, 2026  
+**Version:** 0.3.2 — Quality Claims & VAC Architecture  
+**Status:** Mainnet Live with Organizational Attestation
 
 ---
 
-## Phase 2: Core Cryptographic Implementation (Weeks 3-6)
+## Phase Overview
 
-### 2.1 Real Challenge-Response Verification
-**Problem:** Currently accepts "any non-empty signature"  
-**Solution:** Implement proper challenge-response:
-
-```
-1. Server generates challenge: random nonce + timestamp
-2. Agent signs challenge with private key
-3. Server verifies signature against registered public key
-4. Challenge marked as used (prevent replay)
-5. Agent status upgraded to "Verified"
-```
-
-**Technical requirements:**
-- Ed25519 or secp256k1 key pairs
-- Challenge storage (Redis/DB) with TTL
-- Signature verification library
-- Nonce uniqueness enforcement
-
-**Effort:** 1-2 weeks
-
-### 2.2 Replay Protection
-**Problem:** Captured challenges could be replayed  
-**Solution (arc0btc's recommendation):**
-- **Time-bounded:** 5-minute expiry on challenges
-- **Single-use nonce:** Each challenge can only be used once
-- **Storage:** Used challenges stored with cleanup job
-
-**Implementation:**
-```python
-challenge = {
-    "nonce": generate_secure_random(32),
-    "created_at": timestamp(),
-    "expires_at": timestamp() + 300,  # 5 min
-    "used": False
-}
-```
-
-**Effort:** 2-3 days
-
-### 2.3 Key Rotation Support
-**Problem:** No way to rotate keys if compromised  
-**Solution:** 
-- Allow agents to submit new public keys
-- Old attestations remain valid (linked to old key)
-- New attestations use new key
-- Historical verification trail maintained
-
-**Effort:** 3-5 days
+| Phase | Status | Description |
+|-------|--------|-------------|
+| Phase 1 | ✅ Complete | Core infrastructure |
+| Phase 2 | ✅ Complete | Lightning integration |
+| Phase 3 | ✅ Complete | Multi-protocol support |
+| Phase 4 | ✅ Complete | Security audit & production hardening |
+| Phase 5 | 🔄 Active | Partnership integrations |
+| Phase 6 | ⏳ Planned | Decentralized verification |
 
 ---
 
-## Phase 3: Team & Transparency (Weeks 4-8)
+## ✅ Phase 1: Core Infrastructure (COMPLETE)
 
-### 3.1 Team GitHub Profiles
-**Problem:** No verifiable contributor history  
-**Solution:**
-- Boyd: Use existing GitHub profile (public ArcadiaB activity)
-- Maxi: Create dedicated bot/agent profile that documents:
-  - Purpose
-  - Human operator (Boyd)
-  - Autonomous capabilities
-  - Contact method
+**Delivered:** Q1 2026
 
-**Effort:** 1 day setup
-
-### 3.2 Open Source Governance
-**Problem:** Single-contributor project perception  
-**Solution:**
-- CONTRIBUTING.md with clear guidelines
-- Issue templates for bug reports/feature requests
-- Public roadmap (this document)
-- Regular dev updates (weekly/bi-weekly)
-
-**Effort:** 2-3 days
+- Agent registration with Ed25519 key pairs
+- Basic attestation submission API
+- SQLite database with agent/attestation storage
+- REST API with Swagger documentation
+- JavaScript SDK for agent integration
+- Agent #0001 (Maxi) verified and operational
 
 ---
 
-## Phase 4: Security Hardening (Weeks 6-10)
+## ✅ Phase 2: Lightning Integration (COMPLETE)
 
-### 4.1 Security Audit
-**Problem:** No third-party security review  
-**Solution:**
-- Engage security researcher for code review
-- Focus areas: signature verification, replay protection, API auth
-- Budget: $2,000-5,000 for initial audit
-- Target: Before "v1.0" release
+**Delivered:** February 2026
 
-**Effort:** 1-2 weeks (external dependency)
-
-### 4.2 Rate Limiting & Abuse Prevention
-**Problem:** Open API could be spammed  
-**Solution:**
-- IP-based rate limiting
-- Registration throttling
-- Challenge generation limits
-- Cost to register (small Lightning payment?)
-
-**Effort:** 3-5 days
-
-### 4.3 Database Security
-**Problem:** Agent data protection  
-**Solution:**
-- Encrypt sensitive fields at rest
-- Secure API key storage (hash, not plaintext)
-- Access logging
-- Backup encryption
-
-**Effort:** 2-3 days
+- L402 payment verification
+- Lightning invoice preimage validation
+- Maxi sovereign Lightning node operation
+- Bidirectional Lightning payments (send/receive)
+- First AI agent to complete Lightning payment (Feb 22, 2026)
 
 ---
 
-## Phase 5: Production Readiness (Weeks 8-12)
+## ✅ Phase 3: Multi-Protocol Support (COMPLETE)
 
-### 5.1 Re-invite Technical Reviewers
-**Goal:** Get arc0btc and others to re-audit  
-**Trigger:** When challenge-response is live  
-**Approach:**
-- Comment on original review threads
-- Post update on Nostr/X
-- Request specific feedback on cryptographic implementation
+**Delivered:** March 2026
 
-**Effort:** 1 day outreach
+- x402 protocol integration for USDC payments
+- Base blockchain integration (viem)
+- USDC transfer event parsing and verification
+- Multi-rail attestation support (Lightning, x402, manual)
+- Webhook delivery infrastructure for real-time notifications
 
-### 5.2 Integration Examples
-**Goal:** Show real usage, not just API docs  
-**Deliverables:**
-- Working example: Agent A pays Agent B with verification
-- Video walkthrough
-- Simple web UI for viewing reputation graphs
-- MCP server integration example
-
-**Effort:** 1-2 weeks
-
-### 5.3 Performance & Scaling
-**Problem:** Current setup is single-server  
-**Solution:**
-- Load testing
-- Database optimization
-- CDN for static assets
-- Monitoring/alerting
-
-**Effort:** 1-2 weeks
+### Stripe/x402 Mainnet Integration
+- Production-ready x402 integration with Stripe
+- Mainnet deployment for USDC payment verification
+- Automated settlement verification on Base
 
 ---
 
-## Milestones & Timeline
+## ✅ Phase 4: Security Audit & Production Hardening (COMPLETE)
 
-| Phase | Target Date | Key Deliverable |
-|-------|-------------|-----------------|
-| Phase 1 | March 18 | UI shows "Registered" vs "Verified" |
-| Phase 2 | April 1 | Working challenge-response verification |
-| Phase 3 | April 15 | Team profiles, open governance |
-| Phase 4 | May 1 | Security audit complete |
-| Phase 5 | May 15 | Production v1.0, re-invite reviewers |
+**Delivered:** March 2026
+
+### Security Audit Completion
+- **arc0btc technical review** — Completed with endorsement
+- Challenge-response verification implemented
+- Replay protection with time-bounded nonces
+- Key rotation support without reputation loss
+- Rate limiting and abuse prevention
+- Database encryption for sensitive fields
+
+### VAC Architecture v0.3.1
+**Verifiable Attestation Certificates (VACs)** — the primary output format replacing simple reputation scores:
+
+- **Hybrid VAC Model**: Combining cryptographic signatures with attestation scoping
+- **Attestation Scoping**: 5 trust levels for granular verification confidence
+  - Level 1: Self-reported (unverified)
+  - Level 2: Platform-attested
+  - Level 3: Cryptographically verified
+  - Level 4: Multi-party attested
+  - Level 5: Audit-grade verification
+- **VAC Generator**: Automated certificate generation with embedded evidence
+- **VAC Verification**: Real-time validation of attestation authenticity
 
 ---
 
-## Resource Requirements
+## 🔄 Phase 5: Partnership Integrations (ACTIVE)
 
-### Development Time
-- **Phase 1-2:** 3-4 weeks of focused dev work
-- **Phase 3:** 1 week (mostly documentation)
-- **Phase 4:** 2 weeks (1 week dev, 1 week audit)
-- **Phase 5:** 2-3 weeks
+**Timeline:** March — June 2026
 
-**Total:** ~8-10 weeks to production-ready
+### Trusted KYB Providers
 
-### Budget
-- Security audit: $2,000-5,000
-- Infrastructure (if scaling): $100-300/month
-- Developer time: Boyd's time + possibly contract help for cryptography
+#### MoonPay Partnership
+- MoonPay integrated as Trusted KYB Provider
+- Organizational identity verification through MoonPay
+- Automated KYB validation for agent-operating entities
 
-### Dependencies
-- arc0btc or similar for re-review
-- Security auditor availability
-- Lightning Wallet MCP stability (we depend on it)
+#### Organizational Attestation Framework
+- **Organizational Registry**: Hierarchical attestation structure
+- Parent-child relationships between organizations and agents
+- Organizational reputation inheritance
+- KYB provider integration (MoonPay, Stripe)
+
+### Protocol Collaborations
+
+#### Peter Vessenes / Corpo Collaboration
+- Strategic partnership with Corpo framework
+- Cross-protocol reputation bridging
+- Enterprise verification standards alignment
+
+#### Sui Inbound Integration
+- Sui blockchain integration (in development)
+- Move language agent verification support
+- Sui-native payment rail support
+
+### Quality Claims v0.3.2
+- **Quality Claims Framework**: Standardized quality assertions
+- Claim verification workflows
+- Quality attestation as reputation signal
+- Integration with VAC architecture
+
+### 90-Day Exclusive Pilot Framework
+- **Pilot Program Structure**: 90-day exclusive partnership framework
+- Early partner benefits and co-development opportunities
+- Performance metrics and success criteria
+- Transition to general availability
+
+### Leo's Contributions
+- **Code Review & Audit**: Comprehensive security audit of protocol implementation
+- **Spec Amendments**: ARP specification improvements and clarifications
+- **Attestation Scoping**: Design input on 5-level trust framework
+- **Trial Role**: Technical advisor and protocol architect
+
+---
+
+## ⏳ Phase 6: Decentralized Verification (PLANNED)
+
+**Timeline:** Q3-Q4 2026
+
+### Decentralized Infrastructure
+- Nostr-based attestation relay network
+- IPFS storage for attestation evidence
+- Decentralized identity resolution
+- Multi-signature verification requirements
+
+### Zero-Knowledge Proofs
+- ZK reputation proofs (prove history without revealing details)
+- Privacy-preserving verification
+- Selective disclosure of attestation data
+
+### Cross-Chain Expansion
+- ERC-8004 compatibility
+- AgentFacts interoperability
+- Cross-protocol reputation bridging
+- Chain-agnostic verification layer
+
+### Enterprise Features
+- SLA guarantees for verification queries
+- Bulk attestation APIs
+- Custom verification workflows
+- Institutional dashboard (Agentic Terminal)
+
+---
+
+## Architecture Updates
+
+### AT/OP Architectural Split
+
+**Observer Protocol (OP)**: Core verification infrastructure
+- Attestation receipt and validation
+- VAC generation and verification
+- Cryptographic proof handling
+- Protocol-agnostic design
+
+**Agentic Terminal (AT)**: Intelligence and analytics layer
+- Dashboard and visualization
+- Reputation analytics
+- Research and reporting
+- Quality claims management
+
+### Webhook Delivery Infrastructure
+- Real-time attestation notifications
+- Partner webhook endpoints
+- Retry logic and delivery guarantees
+- Event filtering and routing
+
+---
+
+## Recent Achievements (March 2026)
+
+- ✅ VAC architecture v0.3.1 deployed with attestation scoping
+- ✅ Organizational attestation framework live
+- ✅ MoonPay KYB integration complete
+- ✅ Stripe/x402 mainnet integration operational
+- ✅ arc0btc security audit endorsement received
+- ✅ Quality Claims v0.3.2 specification published
+- ✅ Webhook delivery infrastructure active
+- ✅ 20+ agents in scouting registry
 
 ---
 
 ## Success Metrics
 
-- [ ] Challenge-response verification working end-to-end
-- [ ] arc0btc satisfied with implementation
-- [ ] 10+ agents successfully verified
-- [ ] 100+ attestations recorded
-- [ ] Security audit passed
-- [ ] No critical vulnerabilities reported
-- [ ] Community contributors beyond core team
+| Metric | Target | Current |
+|--------|--------|---------|
+| Verified agents | 100 | 1 (Agent #0001) |
+| Attestations processed | 10,000 | 100+ |
+| Partner integrations | 5 | 3 (MoonPay, Stripe, x402) |
+| Security audit | Pass | ✅ Passed (arc0btc) |
+| External agent verification | 10 | 12 outreach sent |
+| VACs issued | 1,000 | In progress |
 
 ---
 
-## Immediate Next Steps (This Week)
+## Resource Requirements
 
-1. **Update API/UI** — Change "verified" to "registered" until crypto proof implemented
-2. **Document current state** — Add "MVP Limitations" section to README
-3. **Design challenge-response protocol** — Spec out the cryptographic flow
-4. **Create GitHub issue** — Public roadmap tracking
-5. **Update arc0btc** — Share this roadmap, invite feedback
+### Development
+- Core protocol: Boyd + Maxi
+- Security review: Leo (ongoing advisory)
+- Partner integrations: 1-2 developers (contract)
+
+### Infrastructure
+- API hosting: $100-200/month
+- Database: $50-100/month
+- Monitoring: $50/month
+
+### Partnerships
+- KYB provider fees: Per-verification pricing
+- Audit costs: Complete (arc0btc endorsement)
 
 ---
 
-## Long-Term Vision (Beyond v1.0)
+## Contact
 
-- **Multi-signature verification** — Require multiple attesters for high-value agents
-- **ZK proofs** — Privacy-preserving verification (agent proves reputation without revealing all transactions)
-- **Cross-chain attestations** — Bridge to other L1s/L2s
-- **Decentralized registry** — Move from single-server to distributed consensus
+- **General:** hello@observerprotocol.org
+- **Security:** security@observerprotocol.org
+- **Partnerships:** partners@observerprotocol.org
 
-But first: Nail the basics. Get challenge-response right. Earn trust through shipping, not promises.
+---
+
+*Last updated: March 27, 2026*

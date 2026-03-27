@@ -2210,6 +2210,153 @@ def revoke_organization_endpoint(org_id: str, request: OrganizationRevocationReq
 # ============================================================
 
 # ============================================================
+# QUALITY CLAIMS ENDPOINTS (VAC v0.3.2 - §8.6)
+# ============================================================
+
+class QualityClaimSubmission(BaseModel):
+    """Request body for submitting quality claim attestation."""
+    agent_id: str
+    transaction_id: str
+    quality_claims: dict
+    attestation_signature: str
+    credential_id: Optional[str] = None
+
+
+class NotesSubmission(BaseModel):
+    """Request body for submitting notes text for hash verification."""
+    notes_text: str
+    submitted_by: Optional[str] = None
+
+
+@app.post("/vac/partners/{partner_id}/quality-claim")
+def submit_quality_claim(partner_id: str, request: QualityClaimSubmission):
+    """
+    Submit a quality claim attestation from a counterparty.
+    
+    Per VAC v0.3.2 spec §8.6, quality claims provide attestations about
+    transaction quality for AT-ARS reputation scoring.
+    
+    Required quality_claims fields:
+    - completion_status: "complete", "partial", "failed", or "cancelled"
+    - accuracy_rating: integer 1-5
+    - dispute_raised: boolean
+    - payment_settled: boolean
+    - quality_schema_version: string (e.g., "0.3.2")
+    
+    Optional fields:
+    - completion_percentage: integer 0-100 (required if status="partial")
+    - notes_hash: SHA256 hash of freetext notes
+    - notes_retrieval_url: URL for notes retrieval
+    """
+    try:
+        registry = PartnerRegistry()
+        result = registry.submit_quality_claim(
+            partner_id=partner_id,
+            agent_id=request.agent_id,
+            transaction_id=request.transaction_id,
+            quality_claims=request.quality_claims,
+            credential_id=request.credential_id,
+            attestation_signature=request.attestation_signature
+        )
+        return {
+            **result,
+            "message": "Quality claim attestation submitted successfully"
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Quality claim submission failed: {str(e)}")
+
+
+@app.post("/ars/notes/{transaction_id}")
+def submit_notes_for_verification(
+    transaction_id: str,
+    request: NotesSubmission
+):
+    """
+    Submit freetext notes for hash verification and retrieval.
+    
+    Per VAC v0.3.2 spec §8.6, counterparties can submit freetext notes
+    that are verified against the stored notes_hash from a quality claim.
+    
+    The submitted text is hashed and compared to the stored hash.
+    If matched, the retrieval_status is updated from "pending" to "retrieved".
+    
+    Args:
+        transaction_id: The transaction ID associated with the notes
+        notes_text: The freetext notes being submitted
+        submitted_by: Optional identifier of who submitted the notes
+        
+    Returns:
+        Verification result with hash match status and updated retrieval status
+    """
+    try:
+        registry = PartnerRegistry()
+        result = registry.verify_and_retrieve_notes(
+            transaction_id=transaction_id,
+            notes_text=request.notes_text,
+            submitted_by=request.submitted_by
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Notes verification failed: {str(e)}")
+
+
+@app.get("/ars/notes/{transaction_id}/status")
+def get_notes_retrieval_status(transaction_id: str):
+    """
+    Get the retrieval status for notes on a transaction.
+    
+    Returns the current retrieval status ("pending" or "retrieved")
+    along with metadata about the notes hash.
+    """
+    try:
+        registry = PartnerRegistry()
+        result = registry.get_notes_retrieval_status(transaction_id)
+        
+        if not result:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No notes found for transaction {transaction_id}"
+            )
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Status retrieval failed: {str(e)}")
+
+
+@app.get("/vac/{agent_id}/quality-claims")
+def get_agent_quality_claims(agent_id: str):
+    """
+    Get all quality claim attestations for an agent.
+    
+    Returns quality claims from counterparty attestations that
+    contribute to the agent's AT-ARS reputation score.
+    """
+    try:
+        # Load from VAC generator which includes quality claims
+        from vac_generator import VACGenerator
+        generator = VACGenerator()
+        quality_claims = generator._load_quality_claims(agent_id)
+        
+        return {
+            "agent_id": agent_id,
+            "quality_claims": [qc.to_dict() for qc in quality_claims],
+            "count": len(quality_claims)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Quality claims retrieval failed: {str(e)}")
+
+
+# ============================================================
+# END QUALITY CLAIMS ENDPOINTS
+# ============================================================
+
+# ============================================================
 # X402 DEMO ENDPOINT
 # ============================================================
 

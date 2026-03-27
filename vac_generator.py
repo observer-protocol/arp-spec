@@ -107,10 +107,55 @@ class CounterpartyMetadata:
 
 
 @dataclass
+class QualityClaim:
+    """
+    Quality claim attestation from a counterparty.
+    Per VAC v0.3.2 spec §8.6.
+    """
+    transaction_id: str
+    completion_status: str  # "complete", "partial", "failed", "cancelled"
+    accuracy_rating: int  # 1-5
+    dispute_raised: bool
+    payment_settled: bool
+    quality_schema_version: str  # e.g., "0.3.2"
+    completion_percentage: Optional[int] = None  # 0-100, required if status="partial"
+    notes_hash: Optional[str] = None  # SHA256 hash of freetext notes
+    notes_retrieval_url: Optional[str] = None  # AT ARS endpoint URL
+    submitted_at: Optional[str] = None
+    partner_id: Optional[str] = None
+    partner_name: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary, omitting None values."""
+        result = {
+            "transaction_id": self.transaction_id,
+            "completion_status": self.completion_status,
+            "accuracy_rating": self.accuracy_rating,
+            "dispute_raised": self.dispute_raised,
+            "payment_settled": self.payment_settled,
+            "quality_schema_version": self.quality_schema_version,
+        }
+        if self.completion_percentage is not None:
+            result["completion_percentage"] = self.completion_percentage
+        if self.notes_hash:
+            result["notes_hash"] = self.notes_hash
+        if self.notes_retrieval_url:
+            result["notes_retrieval_url"] = self.notes_retrieval_url
+        if self.submitted_at:
+            result["submitted_at"] = self.submitted_at
+        if self.partner_id:
+            result["partner_id"] = self.partner_id
+        if self.partner_name:
+            result["partner_name"] = self.partner_name
+        return result
+
+
+@dataclass
 class VACExtensions:
-    """VAC Extensions - partner attestations and counterparty metadata."""
+    """VAC Extensions - partner attestations, counterparty metadata, and quality claims."""
     partner_attestations: List[PartnerAttestation] = field(default_factory=list)
     counterparty_metadata: List[CounterpartyMetadata] = field(default_factory=list)
+    quality_claims: List[QualityClaim] = field(default_factory=list)
     merkle_root: Optional[str] = None
     
     def to_dict(self) -> Optional[Dict[str, Any]]:
@@ -122,6 +167,9 @@ class VACExtensions:
         
         if self.counterparty_metadata:
             result["counterparty_metadata"] = [m.to_dict() for m in self.counterparty_metadata]
+        
+        if self.quality_claims:
+            result["quality_claims"] = [q.to_dict() for q in self.quality_claims]
         
         if self.merkle_root:
             result["merkle_root"] = self.merkle_root
@@ -388,6 +436,66 @@ class VACGenerator:
             cursor.close()
             conn.close()
     
+    def _load_quality_claims(self, agent_id: str) -> List[QualityClaim]:
+        """
+        Load quality claim attestations for an agent.
+        
+        Per VAC v0.3.2 spec §8.6, quality claims are counterparty attestations
+        that provide reputation signals for AT-ARS scoring.
+        """
+        conn = self._get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        try:
+            cursor.execute("""
+                SELECT 
+                    pa.attestation_id,
+                    pa.claims,
+                    pa.issued_at,
+                    pr.partner_id,
+                    pr.partner_name,
+                    qcn.notes_hash,
+                    qcn.retrieval_url
+                FROM partner_attestations pa
+                JOIN partner_registry pr ON pr.partner_id = pa.partner_id
+                JOIN vac_credentials vc ON vc.credential_id = pa.credential_id
+                LEFT JOIN quality_claims_notes qcn ON 
+                    qcn.transaction_id = (pa.claims->>'transaction_id')::text
+                    AND qcn.partner_id = pa.partner_id
+                WHERE vc.agent_id = %s 
+                  AND vc.is_revoked = FALSE
+                  AND pr.partner_type = 'counterparty'
+                  AND pa.claims->>'attestation_type' = 'quality_claim'
+                  AND (pa.expires_at IS NULL OR pa.expires_at > NOW())
+                ORDER BY pa.issued_at DESC
+            """, (agent_id,))
+            
+            quality_claims = []
+            for row in cursor.fetchall():
+                claims = row['claims']
+                if 'quality_claims' in claims:
+                    qc = claims['quality_claims']
+                    quality_claims.append(QualityClaim(
+                        transaction_id=claims.get('transaction_id', ''),
+                        completion_status=qc.get('completion_status', ''),
+                        accuracy_rating=qc.get('accuracy_rating', 0),
+                        dispute_raised=qc.get('dispute_raised', False),
+                        payment_settled=qc.get('payment_settled', False),
+                        quality_schema_version=qc.get('quality_schema_version', '0.3.2'),
+                        completion_percentage=qc.get('completion_percentage'),
+                        notes_hash=qc.get('notes_hash') or row['notes_hash'],
+                        notes_retrieval_url=qc.get('notes_retrieval_url') or row['retrieval_url'],
+                        submitted_at=row['issued_at'].isoformat(),
+                        partner_id=str(row['partner_id']),
+                        partner_name=row['partner_name']
+                    ))
+            
+            return quality_claims
+            
+        finally:
+            cursor.close()
+            conn.close()
+    
     def generate_vac(self, agent_id: str, include_extensions: bool = True) -> VACCredential:
         """
         Generate a new VAC credential for an agent.
@@ -415,10 +523,14 @@ class VACGenerator:
             # Load partner attestations
             attestations = self._load_partner_attestations(agent_id)
             
+            # Load quality claims (VAC v0.3.2)
+            quality_claims = self._load_quality_claims(agent_id)
+            
             # Create extensions object
             extensions = VACExtensions(
                 partner_attestations=attestations,
                 counterparty_metadata=[],  # Will be populated after credential is stored
+                quality_claims=quality_claims,  # Include quality claims per §8.6
                 merkle_root=None
             )
         
@@ -512,11 +624,13 @@ class VACGenerator:
             extensions = None
             attestations = self._load_partner_attestations(agent_id, row['credential_id'])
             metadata, merkle_root = self._load_counterparty_metadata(row['credential_id'])
+            quality_claims = self._load_quality_claims(agent_id)  # VAC v0.3.2
             
-            if attestations or metadata:
+            if attestations or metadata or quality_claims:
                 extensions = VACExtensions(
                     partner_attestations=attestations,
                     counterparty_metadata=metadata,
+                    quality_claims=quality_claims,  # Include quality claims per §8.6
                     merkle_root=merkle_root
                 )
             

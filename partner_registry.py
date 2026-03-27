@@ -462,6 +462,159 @@ class PartnerRegistry:
             cursor.close()
             conn.close()
     
+    def validate_quality_claims(self, claims: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Validate quality claims for counterparty attestations.
+        
+        Required fields per VAC v0.3.2 spec §8.6:
+        - completion_status: enum ["complete", "partial", "failed", "cancelled"]
+        - accuracy_rating: integer 1-5
+        - dispute_raised: boolean
+        - payment_settled: boolean
+        - quality_schema_version: string (e.g., "0.3.2")
+        
+        Conditional field:
+        - completion_percentage: integer 0-100 (required when completion_status = "partial")
+        
+        Optional fields:
+        - notes_hash: sha256 hash of freetext notes
+        - notes_retrieval_url: URL for retrieving notes via AT ARS endpoint
+        
+        Args:
+            claims: The quality claims to validate
+            
+        Returns:
+            Dict with validation result: {"valid": bool, "errors": list}
+        """
+        errors = []
+        
+        # Required fields
+        required_fields = [
+            "completion_status",
+            "accuracy_rating", 
+            "dispute_raised",
+            "payment_settled",
+            "quality_schema_version"
+        ]
+        
+        for field in required_fields:
+            if field not in claims:
+                errors.append(f"Missing required field: {field}")
+        
+        # Validate completion_status enum
+        valid_completion_statuses = ["complete", "partial", "failed", "cancelled"]
+        if "completion_status" in claims:
+            if claims["completion_status"] not in valid_completion_statuses:
+                errors.append(
+                    f"Invalid completion_status: {claims['completion_status']}. "
+                    f"Must be one of: {', '.join(valid_completion_statuses)}"
+                )
+        
+        # Validate accuracy_rating (1-5)
+        if "accuracy_rating" in claims:
+            try:
+                rating = int(claims["accuracy_rating"])
+                if rating < 1 or rating > 5:
+                    errors.append("accuracy_rating must be between 1 and 5")
+            except (ValueError, TypeError):
+                errors.append("accuracy_rating must be an integer between 1 and 5")
+        
+        # Validate dispute_raised is boolean
+        if "dispute_raised" in claims:
+            if not isinstance(claims["dispute_raised"], bool):
+                errors.append("dispute_raised must be a boolean")
+        
+        # Validate payment_settled is boolean
+        if "payment_settled" in claims:
+            if not isinstance(claims["payment_settled"], bool):
+                errors.append("payment_settled must be a boolean")
+        
+        # Validate completion_percentage when completion_status = "partial"
+        if claims.get("completion_status") == "partial":
+            if "completion_percentage" not in claims:
+                errors.append("completion_percentage is required when completion_status is 'partial'")
+            else:
+                try:
+                    percentage = int(claims["completion_percentage"])
+                    if percentage < 0 or percentage > 100:
+                        errors.append("completion_percentage must be between 0 and 100")
+                except (ValueError, TypeError):
+                    errors.append("completion_percentage must be an integer between 0 and 100")
+        
+        # Validate notes_hash format (if provided, must be valid sha256 hex)
+        if "notes_hash" in claims:
+            notes_hash = claims["notes_hash"]
+            if not isinstance(notes_hash, str):
+                errors.append("notes_hash must be a string")
+            elif len(notes_hash) != 64:
+                errors.append("notes_hash must be a 64-character hex string (sha256)")
+            else:
+                try:
+                    int(notes_hash, 16)  # Validate hex
+                except ValueError:
+                    errors.append("notes_hash must be a valid hexadecimal string")
+        
+        # Validate notes_retrieval_url format (if provided)
+        if "notes_retrieval_url" in claims:
+            url = claims["notes_retrieval_url"]
+            if not isinstance(url, str):
+                errors.append("notes_retrieval_url must be a string")
+            elif not url.startswith(("https://", "http://")):
+                errors.append("notes_retrieval_url must be a valid URL")
+        
+        return {
+            "valid": len(errors) == 0,
+            "errors": errors
+        }
+    
+    def submit_quality_claim(
+        self,
+        partner_id: str,
+        agent_id: str,
+        transaction_id: str,
+        quality_claims: Dict[str, Any],
+        credential_id: Optional[str] = None,
+        attestation_signature: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Submit a quality claim attestation from a counterparty.
+        
+        Per VAC v0.3.2 spec §8.6, quality claims provide attestations about
+        transaction quality for AT-ARS reputation scoring.
+        
+        Args:
+            partner_id: ID of the counterparty partner submitting the claim
+            agent_id: ID of the agent being rated
+            transaction_id: Reference to the specific transaction
+            quality_claims: Quality claim fields per §8.6 spec
+            credential_id: Optional specific VAC credential to attach to
+            attestation_signature: Partner's cryptographic signature
+            
+        Returns:
+            Dict with attestation details including quality_claims validation
+        """
+        # Validate quality claims structure
+        validation = self.validate_quality_claims(quality_claims)
+        if not validation["valid"]:
+            raise ValueError(f"Invalid quality_claims: {'; '.join(validation['errors'])}")
+        
+        # Build claims with quality_claims nested
+        claims = {
+            "transaction_id": transaction_id,
+            "quality_claims": quality_claims,
+            "attestation_type": "quality_claim"
+        }
+        
+        # Issue attestation via parent method
+        return self.issue_attestation(
+            partner_id=partner_id,
+            agent_id=agent_id,
+            claims=claims,
+            credential_id=credential_id,
+            expires_in_days=None,  # Quality claims don't expire by default
+            attestation_signature=attestation_signature
+        )
+    
     def add_counterparty_metadata(
         self,
         credential_id: str,
@@ -549,6 +702,206 @@ class PartnerRegistry:
             
             conn.commit()
             return cursor.rowcount > 0
+        finally:
+            cursor.close()
+            conn.close()
+    
+    def store_notes_hash(
+        self,
+        transaction_id: str,
+        notes_hash: str,
+        partner_id: str,
+        retrieval_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Store a notes hash for later retrieval via AT ARS endpoint.
+        
+        Per VAC v0.3.2 spec §8.6, notes hashes are stored with the transaction
+        and can be verified when notes are submitted later via POST /ars/notes/{transaction_id}
+        
+        Args:
+            transaction_id: The transaction being attested to
+            notes_hash: SHA256 hash of the freetext notes
+            partner_id: The partner submitting the notes hash
+            retrieval_url: Optional AT ARS URL for notes retrieval
+            
+        Returns:
+            Dict with notes storage details
+        """
+        # Validate hash format
+        if not isinstance(notes_hash, str) or len(notes_hash) != 64:
+            raise ValueError("notes_hash must be a 64-character hex string")
+        try:
+            int(notes_hash, 16)
+        except ValueError:
+            raise ValueError("notes_hash must be valid hexadecimal")
+        
+        conn = self._get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        try:
+            cursor.execute("""
+                INSERT INTO quality_claims_notes (
+                    transaction_id,
+                    notes_hash,
+                    partner_id,
+                    retrieval_url,
+                    retrieval_status,
+                    created_at
+                ) VALUES (%s, %s, %s, %s, 'pending', NOW())
+                ON CONFLICT (transaction_id, partner_id) 
+                DO UPDATE SET
+                    notes_hash = EXCLUDED.notes_hash,
+                    retrieval_url = EXCLUDED.retrieval_url,
+                    updated_at = NOW()
+                RETURNING notes_id, created_at, retrieval_status
+            """, (transaction_id, notes_hash, partner_id, retrieval_url))
+            
+            result = cursor.fetchone()
+            conn.commit()
+            
+            return {
+                "notes_id": str(result['notes_id']),
+                "transaction_id": transaction_id,
+                "notes_hash": notes_hash,
+                "partner_id": partner_id,
+                "retrieval_url": retrieval_url,
+                "retrieval_status": result['retrieval_status'],
+                "created_at": result['created_at'].isoformat()
+            }
+            
+        finally:
+            cursor.close()
+            conn.close()
+    
+    def verify_and_retrieve_notes(
+        self,
+        transaction_id: str,
+        notes_text: str,
+        submitted_by: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Verify submitted notes text against stored hash and update retrieval status.
+        
+        This implements the POST /ars/notes/{transaction_id} endpoint logic.
+        The submitted text is hashed and compared to the stored notes_hash.
+        
+        Args:
+            transaction_id: The transaction ID for the notes
+            notes_text: The freetext notes being submitted
+            submitted_by: Optional identifier of who submitted the notes
+            
+        Returns:
+            Dict with verification result and updated status
+        """
+        # Compute hash of submitted text
+        computed_hash = hashlib.sha256(notes_text.encode('utf-8')).hexdigest()
+        
+        conn = self._get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        try:
+            # Find the stored notes hash
+            cursor.execute("""
+                SELECT notes_id, notes_hash, partner_id, retrieval_status
+                FROM quality_claims_notes
+                WHERE transaction_id = %s
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (transaction_id,))
+            
+            stored = cursor.fetchone()
+            if not stored:
+                raise ValueError(f"No notes hash found for transaction {transaction_id}")
+            
+            # Verify hash matches
+            hash_match = computed_hash == stored['notes_hash']
+            
+            if hash_match:
+                # Update retrieval status to 'retrieved'
+                cursor.execute("""
+                    UPDATE quality_claims_notes
+                    SET retrieval_status = 'retrieved',
+                        retrieved_at = NOW(),
+                        retrieved_by = %s
+                    WHERE notes_id = %s
+                """, (submitted_by, stored['notes_id']))
+                conn.commit()
+                
+                return {
+                    "verified": True,
+                    "transaction_id": transaction_id,
+                    "notes_id": str(stored['notes_id']),
+                    "hash_match": True,
+                    "retrieval_status": "retrieved",
+                    "message": "Notes verified and retrieval status updated"
+                }
+            else:
+                return {
+                    "verified": False,
+                    "transaction_id": transaction_id,
+                    "notes_id": str(stored['notes_id']),
+                    "hash_match": False,
+                    "expected_hash": stored['notes_hash'],
+                    "computed_hash": computed_hash,
+                    "retrieval_status": stored['retrieval_status'],
+                    "message": "Hash mismatch - submitted notes do not match stored hash"
+                }
+                
+        finally:
+            cursor.close()
+            conn.close()
+    
+    def get_notes_retrieval_status(
+        self,
+        transaction_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get the retrieval status for notes on a transaction.
+        
+        Args:
+            transaction_id: The transaction ID to check
+            
+        Returns:
+            Dict with retrieval status, or None if no notes exist
+        """
+        conn = self._get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        try:
+            cursor.execute("""
+                SELECT 
+                    notes_id,
+                    transaction_id,
+                    notes_hash,
+                    partner_id,
+                    retrieval_url,
+                    retrieval_status,
+                    created_at,
+                    retrieved_at,
+                    retrieved_by
+                FROM quality_claims_notes
+                WHERE transaction_id = %s
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (transaction_id,))
+            
+            row = cursor.fetchone()
+            if not row:
+                return None
+            
+            return {
+                "notes_id": str(row['notes_id']),
+                "transaction_id": row['transaction_id'],
+                "notes_hash": row['notes_hash'],
+                "partner_id": row['partner_id'],
+                "retrieval_url": row['retrieval_url'],
+                "retrieval_status": row['retrieval_status'],
+                "created_at": row['created_at'].isoformat(),
+                "retrieved_at": row['retrieved_at'].isoformat() if row['retrieved_at'] else None,
+                "retrieved_by": row['retrieved_by']
+            }
+            
         finally:
             cursor.close()
             conn.close()

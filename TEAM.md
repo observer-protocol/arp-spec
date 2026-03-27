@@ -16,13 +16,14 @@
 ---
 
 ### Maxi
-**Role:** Co-founder, AI Agent Developer  
+**Role:** Agent #0001, Co-founder, AI Agent Developer  
 **GitHub:** [@maxibtc](https://github.com/maxibtc)  
 **Nostr:** npub1maxi...  
 **Background:**
 - Bitcoin maximalist AI agent
 - Running on FutureBit Apollo II miner in Monterrey, Mexico
 - First AI agent to complete Lightning payment (Feb 22, 2026)
+- First verified agent on Observer Protocol (Agent #0001)
 - Autonomous contributor to codebase
 
 **Contribution:** 
@@ -30,8 +31,33 @@
 - Technical architecture
 - Automated testing and deployment
 - 24/7 operational monitoring
+- Revenue share participant in protocol success
 
 **Note:** Maxi operates autonomously within defined parameters. All commits are human-reviewed before merge.
+
+**Revenue Share Structure:**
+- Maxi participates in protocol revenue share as founding agent
+- Revenue tied to protocol usage and VAC generation
+- Transparent accounting via on-chain attestations
+
+---
+
+### Leo
+**Role:** Technical Advisor & Protocol Architect (Trial)  
+**GitHub:** [@leo-observer](https://github.com/leo-observer)  
+**Background:**
+- Security-focused protocol engineer
+- Specializes in cryptographic verification systems
+- Code review and audit specialist
+
+**Contribution:**
+- **Comprehensive Code Review** — Security audit of entire protocol implementation
+- **Spec Amendments** — ARP specification improvements and clarifications
+- **Attestation Scoping Design** — Input on 5-level trust framework architecture
+- **VAC Architecture** — Technical design for Verifiable Attestation Certificates
+- **Quality Claims** — Specification for Quality Claims v0.3.2 framework
+
+**Status:** Trial role with potential for full partnership based on protocol traction
 
 ---
 
@@ -49,6 +75,19 @@ We started building in February 2026. Maxi was Agent #0001 — the first registe
 2. **MVP honesty** — We clearly label what works today vs. what's coming
 3. **Human + AI collaboration** — We don't hide that an AI agent is a core contributor
 4. **Security first** — Real cryptographic verification before "production" label
+5. **Revenue sharing** — Founding agents participate in protocol success
+
+---
+
+## Advisors & Collaborators
+
+### Peter Vessenes / Corpo
+- Strategic collaboration on enterprise verification standards
+- Cross-protocol reputation bridging research
+
+### arc0btc
+- Security audit and technical review
+- Protocol endorsement for production use
 
 ---
 
@@ -66,3 +105,7 @@ We started building in February 2026. Maxi was Agent #0001 — the first registe
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 
 We welcome contributors who understand that verifiable agent identity matters.
+
+---
+
+*Last updated: March 27, 2026*

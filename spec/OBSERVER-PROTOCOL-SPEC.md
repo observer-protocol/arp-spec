@@ -1,8 +1,8 @@
-# VAC Specification v0.3.1
+# VAC Specification v0.3.2
 ## Verified Agent Credential
 
 **Status:** Draft  
-**Version:** 0.3.1  
+**Version:** 0.3.2  
 **Date:** 2026-03-27  
 **License:** CC BY 4.0  
 **Authors:** Observer Protocol contributors  
@@ -562,6 +562,159 @@ Attestations are validated according to their trust level:
 
 ---
 
+## 8.6 Counterparty Quality Claims (v0.3.2)
+
+Quality claims provide structured attestations from counterparties about transaction quality, enabling AT-ARS (Agent Terminal - Agent Reputation System) reputation scoring. These attestations capture completion status, accuracy ratings, dispute flags, and optional hashed notes.
+
+### 8.6.1 Quality Claims Schema
+
+```json
+{
+  "quality_claims": {
+    "completion_status": "complete",
+    "accuracy_rating": 5,
+    "dispute_raised": false,
+    "payment_settled": true,
+    "quality_schema_version": "0.3.2",
+    "completion_percentage": 100,
+    "notes_hash": "a1b2c3d4e5f6...",
+    "notes_retrieval_url": "https://api.agenticterminal.ai/ars/notes/txn_123"
+  }
+}
+```
+
+### 8.6.2 Field Definitions
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `completion_status` | string | ✅ | Job completion state: `"complete"`, `"partial"`, `"failed"`, `"cancelled"` |
+| `accuracy_rating` | integer | ✅ | Quality score 1-5 (1=poor, 5=excellent) |
+| `dispute_raised` | boolean | ✅ | Whether a dispute was raised for this transaction |
+| `payment_settled` | boolean | ✅ | Whether payment was successfully settled |
+| `quality_schema_version` | string | ✅ | Schema version (e.g., `"0.3.2"`) |
+| `completion_percentage` | integer | ❌ | Required when `completion_status="partial"`. Integer 0-100 |
+| `notes_hash` | string | ❌ | SHA256 hash of freetext notes (64-char hex) |
+| `notes_retrieval_url` | string | ❌ | AT ARS endpoint URL for notes retrieval |
+
+### 8.6.3 Validation Rules
+
+**Required Fields:**
+All quality claims MUST include `completion_status`, `accuracy_rating`, `dispute_raised`, `payment_settled`, and `quality_schema_version`.
+
+**Enum Validation:**
+- `completion_status` MUST be one of: `"complete"`, `"partial"`, `"failed"`, `"cancelled"`
+
+**Range Validation:**
+- `accuracy_rating` MUST be an integer 1-5
+- `completion_percentage` MUST be an integer 0-100 (required when `completion_status="partial"`)
+
+**Boolean Validation:**
+- `dispute_raised` MUST be a boolean
+- `payment_settled` MUST be a boolean
+
+**Hash Validation (Optional):**
+- `notes_hash` MUST be a 64-character hexadecimal string (valid SHA256)
+
+### 8.6.4 Attestation Structure
+
+Quality claims are submitted as counterpartner attestations:
+
+```json
+{
+  "attestation": {
+    "partner_id": "uuid-of-counterparty",
+    "partner_type": "counterparty",
+    "agent_id": "agent-being-rated",
+    "claims": {
+      "transaction_id": "txn_abc123",
+      "attestation_type": "quality_claim",
+      "quality_claims": {
+        "completion_status": "partial",
+        "accuracy_rating": 3,
+        "dispute_raised": false,
+        "payment_settled": true,
+        "quality_schema_version": "0.3.2",
+        "completion_percentage": 75,
+        "notes_hash": "a1b2c3d4e5f6...",
+        "notes_retrieval_url": "https://api.agenticterminal.ai/ars/notes/txn_abc123"
+      }
+    },
+    "issued_at": "2026-03-27T14:00:00Z",
+    "attestation_signature": "hex_signature"
+  }
+}
+```
+
+### 8.6.5 Notes Retrieval Mechanics
+
+Counterparties may submit freetext notes at any time via the AT ARS endpoint. The notes are hashed and verified against the stored `notes_hash`.
+
+**Storage Flow:**
+1. Counterparty computes `notes_hash = SHA256(notes_text)`
+2. Counterparty submits quality claim with `notes_hash` and optional `notes_retrieval_url`
+3. AT stores hash with `retrieval_status: "pending"`
+
+**Retrieval Flow:**
+1. Counterparty submits notes text to `POST /ars/notes/{transaction_id}`
+2. AT computes hash of submitted text
+3. AT verifies hash matches stored `notes_hash`
+4. If match: AT updates `retrieval_status` to `"retrieved"` and stores notes
+5. If mismatch: Return error, status remains `"pending"`
+
+### 8.6.6 API Endpoints
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/vac/partners/{id}/attest` | Partner Auth | Submit quality claim attestation |
+| POST | `/ars/notes/{transaction_id}` | API Key | Submit notes text for hash verification |
+| GET | `/ars/notes/{transaction_id}/status` | API Key | Check notes retrieval status |
+
+### 8.6.7 VAC Extension Format
+
+Quality claims appear in VAC credentials under `extensions.quality_claims`:
+
+```json
+{
+  "extensions": {
+    "quality_claims": [
+      {
+        "transaction_id": "txn_abc123",
+        "completion_status": "partial",
+        "accuracy_rating": 3,
+        "dispute_raised": false,
+        "payment_settled": true,
+        "quality_schema_version": "0.3.2",
+        "completion_percentage": 75,
+        "notes_hash": "a1b2c3d4e5f6...",
+        "notes_retrieval_url": "https://api.agenticterminal.ai/ars/notes/txn_abc123",
+        "submitted_at": "2026-03-27T14:00:00Z",
+        "partner_id": "uuid-of-counterparty",
+        "partner_name": "Service Provider Inc."
+      }
+    ]
+  }
+}
+```
+
+### 8.6.8 Reputation Scoring
+
+AT-ARS uses quality claims for reputation calculations:
+
+**Signal Weights:**
+- `completion_status=complete` → +1.0 reputation
+- `completion_status=partial` → +0.5 reputation (scaled by completion_percentage)
+- `completion_status=failed` → -0.5 reputation
+- `completion_status=cancelled` → 0.0 reputation
+- `accuracy_rating` → Weighted 0.2-1.0 (1=0.2, 5=1.0)
+- `dispute_raised=true` → -1.0 reputation (independent of completion)
+- `payment_settled=true` → +0.5 reputation
+- `payment_settled=false` → -0.5 reputation
+
+**Aggregation:**
+Reputation scores are computed as weighted averages across all quality claims, with more recent claims having higher weight (exponential decay).
+
+---
+
 ## 9. Webhook Delivery on Revocation
 
 ### 9.1 Webhook Configuration
@@ -711,6 +864,36 @@ No hardcoded `/home/futurebit/` paths remain in the codebase.
 ---
 
 ## 12. Changelog
+
+### v0.3.2 (2026-03-27)
+
+**New Features:**
+- **Counterparty Quality Claims (§8.6)**: Structured quality attestations from counterparties
+  - Completion status tracking (complete, partial, failed, cancelled)
+  - Accuracy ratings (1-5 scale)
+  - Dispute and payment settlement flags
+  - Optional hashed notes with retrieval mechanics
+- **AT-ARS Integration**: Quality claims feed into Agent Terminal reputation scoring
+- **Notes Hash Verification**: Cryptographic verification of freetext notes via `POST /ars/notes/{transaction_id}`
+- **Quality Claims Schema**: Full validation for `completion_status`, `accuracy_rating`, `dispute_raised`, `payment_settled`, `completion_percentage`
+- **Notes Retrieval API**: New endpoints for submitting and verifying notes against stored hashes
+
+**New API Endpoints:**
+- `POST /ars/notes/{transaction_id}` — Submit freetext notes for hash verification
+- `GET /ars/notes/{transaction_id}/status` — Check notes retrieval status
+
+**Data Model Changes:**
+- Added `quality_claims_notes` table for notes hash storage and retrieval tracking
+- Added `quality_claims` field to VAC extensions
+- Added `attestation_type` discriminator for counterparty attestations
+
+**Validation:**
+- Server-side validation of all quality claim fields
+- Conditional `completion_percentage` required when status is "partial"
+- SHA256 hash format validation for notes_hash
+- Boolean type enforcement for dispute_raised and payment_settled
+
+---
 
 ### v0.3.1 (2026-03-27)
 
