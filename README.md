@@ -4,7 +4,7 @@
 
 Cryptographically verifiable identity and transaction verification for AI agents.
 
-> **✅ v0.2.1 LIVE:** Real cryptographic verification is now working! ECDSA (SECP256K1) challenge-response protocol fully functional. See [ROADMAP.md](./ROADMAP.md) for Phase 4 (security audit) and future features.
+> **✅ v0.3.0 LIVE:** Production-ready with full security audit! Transaction signatures, VAC credentials, and verified attestation — all cryptographically secured. See [ROADMAP.md](./ROADMAP.md) for upcoming features.
 
 ## 📄 Whitepaper
 
@@ -41,10 +41,52 @@ console.log(agent.badge_url);
 AI agents need to prove identity and build trust without intermediaries. Observer Protocol provides:
 
 - 🔐 **Cryptographic Identity** — Prove you're the same agent across sessions using Bitcoin keys
-- ✅ **Transaction Verification** — Immutable proof of agent-to-agent payments
+- ✅ **Transaction Verification** — Immutable proof of agent-to-agent payments with signature validation
 - 📊 **Reputation Graph** — Build trust through verifiable history
 - 🏷️ **Badge System** — Bronze/Silver/Gold/Platinum based on verified activity
 - 🔒 **No KYC** — Privacy-preserving using cryptographic proofs
+
+## Security Features
+
+### Transaction Signature Verification (v0.3.0)
+
+All transactions are cryptographically signed by the sending agent:
+
+**Signing Format:**
+```
+agent_id:transaction_reference:protocol:timestamp
+```
+
+**Example:**
+```
+agent-001:tx-12345:lightning:1712345678
+```
+
+The server verifies:
+1. Agent is registered and verified
+2. Transaction signature matches agent's public key
+3. Message format is canonical (no tampering)
+
+Invalid signatures are rejected with HTTP 400.
+
+### VAC (Verifiable Agent Credentials)
+
+VAC credentials provide cryptographic proof of agent activity:
+
+```json
+{
+  "agent_id": "agent-001",
+  "public_key_hash": "a1b2c3...",
+  "verified_tx_count": 42,
+  "unique_counterparties": 8,
+  "last_activity": "2024-03-26T20:00:00Z",
+  "issued_at": "2024-03-26T20:05:00Z",
+  "expires_at": "2024-06-24T20:05:00Z",
+  "signature": "..."
+}
+```
+
+VACs are signed by the Observer Protocol authority and can be verified by any third party.
 
 ## How It Works
 
@@ -56,6 +98,7 @@ Every agent-to-agent payment gets cryptographically verified and recorded:
 - L402 payments (Lightning)
 - Nostr zaps
 - On-chain Bitcoin
+- Cross-protocol settlements (x402, Solana)
 
 ### 3. Reputation Building
 Agents build reputation through:
@@ -65,26 +108,38 @@ Agents build reputation through:
 
 ## API Endpoints
 
-- `POST /agents/register` — Register new agent
-- `POST /agents/{id}/verify` — Verify agent identity
-- `POST /transactions` — Record verified transaction
-- `GET /agents/{id}/reputation` — Get reputation metrics
-- `GET /transactions` — Query transaction history
+### Agent Management
+- `POST /observer/agents/register` — Register new agent
+- `GET /observer/agents/{pubkey}/verify` — Check agent verification status
+- `GET /observer/agents/list` — List all registered agents
+- `GET /observer/agents/{pubkey}/transactions` — Get agent transaction history
 
-[API Reference](./docs/API.md)
+### Transaction Recording
+- `POST /observer/transactions` — Submit verified transaction (requires signature)
+- `GET /observer/transactions` — Query transaction history
+
+### VAC Credentials
+- `GET /observer/agents/{pubkey}/vac` — Get Verifiable Agent Credential
+- `POST /observer/agents/{pubkey}/vac/verify` — Verify VAC signature
+
+### Registry
+- `GET /observer/trends` — Get network-wide statistics
+- `GET /observer/agents/{pubkey}/delegations` — Get agent delegations
+
+[Full API Reference](./docs/API.md)
 
 ## Live Badge
 
 Display your verified status:
 
 ```html
-<img src="https://api.observerprotocol.org/badges/{agent_id}.svg" 
+<img src="https://api.agenticterminal.ai/observer/badges/{agent_id}.svg" 
      alt="Verified Agent" />
 ```
 
 ## Verified Agents
 
-View the growing network of verified agents: https://observerprotocol.org/agents
+View the growing network of verified agents: https://observerprotocol.org/registry.html
 
 ## Integration Examples
 
@@ -96,81 +151,73 @@ await observer.recordTransaction({
   recipientId: myAgentId,
   amountSats: paymentAmount,
   paymentHash: l402Response.payment_hash,
-  proof: l402Response.preimage
+  protocol: 'lightning',
+  signature: mySignature // Sign: senderId:paymentHash:lightning:timestamp
 });
 ```
 
-### Nostr Bot
+### Webhook Integration
 ```javascript
-// After receiving zap
-await observer.recordTransaction({
-  senderId: senderAgentId,
-  recipientId: myAgentId,
-  amountSats: zapAmount,
-  paymentHash: zapReceipt.payment_hash,
-  proof: zapReceipt.preimage
+// Receive real-time verification events
+observer.on('transaction:verified', (tx) => {
+  console.log(`Payment verified: ${tx.amountSats} sats from ${tx.senderId}`);
+  // Grant access, update reputation, etc.
 });
 ```
 
-## Current Status (v0.2.1)
+## Architecture
 
-### ✅ Working Today
-- **Real cryptographic verification** — ECDSA (SECP256K1) challenge-response protocol
-- Agent registration with public keys
-- Transaction recording and attestation
-- Badge generation (SVG) — Registered/Verified states
-- Reputation graph API
-- Replay protection (5-min expiry, single-use challenges)
+```
+┌─────────────┐     ┌─────────────────┐     ┌─────────────┐
+│   Agent A   │────→│  L402/x402      │────→│   Agent B   │
+│  (Sender)   │     │  Payment Rail   │     │ (Recipient) │
+└─────────────┘     └─────────────────┘     └─────────────┘
+        │                                          │
+        │    ┌──────────────────────────────┐     │
+        └───→│  Observer Protocol Verify    │←────┘
+             │  • Cryptographic identity    │
+             │  • Transaction attestation   │
+             │  • Reputation graph          │
+             └──────────────────────────────┘
+```
 
-### 🔒 Security
-- Cryptographic verification: **IMPLEMENTED** (v0.2.1)
-- Challenge-response with SECP256K1
-- Time-bounded challenges (5-minute expiry)
-- Single-use nonces (replay protection)
+## Protocol Support
 
-### 🔜 Coming Soon (Phase 4+)
-See [ROADMAP.md](./ROADMAP.md) for:
-- Formal security audit
-- Distributed architecture
-- Advanced reputation algorithms
-- Enhanced sybil-resistance mechanisms
+| Protocol | Status | Description |
+|----------|--------|-------------|
+| L402 | ✅ Live | Lightning-native payments |
+| x402 | ✅ Live | HTTP 402 payment standard |
+| Nostr | ✅ Live | Zap verification |
+| Solana | 🔄 Beta | Program signatures |
+| ERC-8004 | 🔄 Beta | EVM agent registry |
 
-## Why This Matters
+## Roadmap
 
-As AI agents become autonomous economic actors, they need:
+See [ROADMAP.md](./ROADMAP.md) for detailed phase breakdown.
 
-1. **Verifiable identity** without centralized authorities
-2. **Trustless reputation** based on cryptographic proof
-3. **Payment verification** that can't be faked
-4. **Privacy** without sacrificing accountability
+- ✅ **Phase 1:** Core infrastructure
+- ✅ **Phase 2:** Lightning integration
+- ✅ **Phase 3:** Multi-protocol support
+- ✅ **Phase 4:** Security audit & production hardening
+- 🔄 **Phase 5:** Partnership integrations
+- ⏳ **Phase 6:** Decentralized verification
 
-Bitcoin provides the foundation. Observer Protocol provides the verification layer.
+## Contributing
 
-## Get Verified
+We welcome contributions! See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 
-1. Generate a keypair
-2. Register at https://api.observerprotocol.org
-3. Complete verification challenge
-4. Embed your badge
+## License
 
-Takes 5 minutes. Free forever.
+MIT License — see [LICENSE](./LICENSE) for details.
 
 ## Links
 
 - Website: https://observerprotocol.org
-- Whitepaper: [whitepaper.md](./whitepaper.md)
-- SDK: [@observerprotocol/sdk](./sdk/)
-- API Docs: [docs/API.md](./docs/API.md)
-- Roadmap: [ROADMAP.md](./ROADMAP.md)
-- Team: [TEAM.md](./TEAM.md)
-- GitHub: https://github.com/observerprotocol
+- Registry: https://observerprotocol.org/registry.html
+- Docs: https://observerprotocol.org/docs
+- Twitter: [@Obsrver_Prtcl](https://twitter.com/Obsrver_Prtcl)
+- GitHub: https://github.com/observer-protocol
 
-## Contributing
+---
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md)
-
-We welcome contributors who understand that verifiable agent identity matters.
-
-## License
-
-MIT
+**Built for the agentic economy.** 🔐⚡
