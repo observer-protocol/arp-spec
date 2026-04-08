@@ -5,11 +5,89 @@ Resolves did:web DIDs to DID Documents via HTTPS.
 Used by all VC verification flows.
 """
 
+import json
 import os
 from typing import Optional
 
 import base58
 import httpx
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from fastapi import HTTPException
+
+# Database configuration
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+
+def get_db_connection():
+    """Get PostgreSQL connection"""
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL environment variable is not set.")
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+
+
+def fetch_local_did_document(did: str, did_parts: list) -> tuple:
+    """Fetch DID document from local database - supports path-based did:web DIDs."""
+    from did_document_builder import build_agent_did_document, build_org_did_document
+
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    try:
+        # Path-based: did:web:observerprotocol.org:agents:{agent_id}
+        if len(did_parts) >= 3 and did_parts[1] == "agents":
+            agent_id = did_parts[2]
+            cursor.execute(
+                "SELECT did_document, public_key, agent_did FROM observer_agents WHERE agent_id = %s",
+                (agent_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+
+            # Use stored document if available, otherwise build dynamically
+            if row["did_document"]:
+                doc = json.loads(row["did_document"]) if isinstance(row["did_document"], str) else row["did_document"]
+            elif row["public_key"]:
+                doc = build_agent_did_document(agent_id, row["public_key"])
+            else:
+                raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' has no public key or DID document")
+
+            return doc, {"type": "agent", "source": "local"}
+
+        # Path-based: did:web:observerprotocol.org:orgs:{org_id}
+        if len(did_parts) >= 3 and did_parts[1] == "orgs":
+            org_id = did_parts[2]
+            cursor.execute(
+                "SELECT did_document, public_key FROM organizations WHERE org_id = %s",
+                (org_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail=f"Organization '{org_id}' not found")
+
+            if row["did_document"]:
+                doc = json.loads(row["did_document"]) if isinstance(row["did_document"], str) else row["did_document"]
+            elif row["public_key"]:
+                doc = build_org_did_document(org_id, row["public_key"])
+            else:
+                raise HTTPException(status_code=404, detail=f"Organization '{org_id}' has no public key or DID document")
+
+            return doc, {"type": "org", "source": "local"}
+
+        # Root DID: did:web:observerprotocol.org
+        cursor.execute(
+            "SELECT document FROM op_did_document ORDER BY updated_at DESC LIMIT 1"
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Root DID document not found")
+        doc = json.loads(row["document"]) if isinstance(row["document"], str) else row["document"]
+        return doc, {"type": "root", "source": "local"}
+
+    finally:
+        cursor.close()
+        conn.close()
 
 
 def resolve_did(did_string: str) -> dict:
@@ -60,6 +138,14 @@ def resolve_did_web(did: str) -> dict:
         url = f"https://{domain}/{'/'.join(path_segments)}/did.json"
     else:
         url = f"https://{domain}/.well-known/did.json"
+
+    # Allow local override to avoid loopback through Cloudflare
+    local_base = os.environ.get("DID_LOCAL_BASE_URL")
+    if local_base and domain == os.environ.get("OP_BASE_DOMAIN", "observerprotocol.org"):
+        if path_segments:
+            url = f"{local_base}/{'/'.join(path_segments)}/did.json"
+        else:
+            url = f"{local_base}/.well-known/did.json"
 
     timeout = float(os.environ.get("DID_RESOLVE_TIMEOUT_SECONDS", "10"))
 

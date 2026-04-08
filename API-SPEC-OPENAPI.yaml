@@ -1,0 +1,1074 @@
+openapi: 3.0.3
+info:
+  title: Observer Protocol API
+  description: |
+    Multi-chain payment attestation and agent verification protocol for autonomous economic agents.
+    
+    Provides cryptographic identity (DID), payment verification across Bitcoin/Lightning, 
+    Ethereum, Solana, stablecoin rails, and Verifiable Credentials (VAC) for agent reputation.
+  version: 1.1.0
+  contact:
+    name: Observer Protocol
+    url: https://observerprotocol.org
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://api.observerprotocol.org
+    description: Production server
+  - url: https://api.agenticterminal.ai
+    description: Alternate production server
+  - url: http://localhost:8000
+    description: Local development
+
+tags:
+  - name: Health
+    description: System health and status endpoints
+  - name: Protocols
+    description: Protocol listings and metrics
+  - name: Agents
+    description: Agent registration, verification, and management
+  - name: DID Resolution
+    description: W3C DID document resolution
+  - name: VAC
+    description: Verified Agent Credentials
+  - name: Verifiable Presentations
+    description: VP verification and submission
+  - name: Transactions
+    description: Payment attestation and feed
+  - name: Partners
+    description: Partner registry and attestations
+  - name: Organizations
+    description: Organization registration and management
+  - name: AIP
+    description: Agentic Identity Protocol endpoints
+
+paths:
+  # Health & Metrics
+  /api/v1/health:
+    get:
+      tags: [Health]
+      summary: Health check
+      description: Returns API health status and database connectivity
+      responses:
+        '200':
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  db: { type: string, example: connected }
+                  timestamp: { type: string, format: date-time }
+        '503':
+          description: Database disconnected
+
+  /api/v1/stats:
+    get:
+      tags: [Health]
+      summary: Database statistics
+      responses:
+        '200':
+          description: Statistics retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stats:
+                    type: object
+                    properties:
+                      protocols_count: { type: integer }
+                      metrics_count: { type: integer }
+                      signals_count: { type: integer }
+                      total_agents: { type: integer }
+                      total_transactions: { type: integer }
+                      total_vacs: { type: integer }
+
+  /api/v1/protocols:
+    get:
+      tags: [Protocols]
+      summary: List all protocols
+      responses:
+        '200':
+          description: List of protocols
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  protocols:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Protocol'
+                  count: { type: integer }
+
+  /api/v1/protocols/{protocol_id}:
+    get:
+      tags: [Protocols]
+      summary: Get protocol details
+      parameters:
+        - name: protocol_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Protocol details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  protocol: { $ref: '#/components/schemas/Protocol' }
+                  latest_metrics: { type: array }
+        '404':
+          description: Protocol not found
+
+  /api/v1/metrics:
+    get:
+      tags: [Protocols]
+      summary: Get time-series metrics
+      parameters:
+        - name: protocol
+          in: query
+          schema: { type: string }
+        - name: metric_name
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 30 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        '200':
+          description: Metrics list
+
+  /api/v1/signals:
+    get:
+      tags: [Protocols]
+      summary: Get signals
+      parameters:
+        - name: protocol
+          in: query
+          schema: { type: string }
+        - name: event_type
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        '200':
+          description: Signals list
+
+  # Agent Registration
+  /observer/register-agent:
+    post:
+      tags: [Agents]
+      summary: Register a new agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [public_key]
+              properties:
+                public_key: { type: string, description: Ed25519 public key }
+                agent_name: { type: string }
+                alias: { type: string }
+                framework: { type: string }
+                legal_entity_id: { type: string }
+                wallet_standard: { type: string, enum: [ows] }
+                ows_vault_name: { type: string }
+                chains: { type: string, description: JSON array of chains }
+      responses:
+        '200':
+          description: Agent registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_id: { type: string }
+                  agent_did: { type: string }
+                  badge_url: { type: string }
+                  did_document_url: { type: string }
+
+  /observer/agent/{agent_id}:
+    patch:
+      tags: [Agents]
+      summary: Update agent information
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agent_name: { type: string }
+                alias: { type: string }
+                framework: { type: string }
+                legal_entity_id: { type: string }
+      responses:
+        '200':
+          description: Agent updated
+
+  /observer/agents/{agent_id}:
+    get:
+      tags: [Agents]
+      summary: Get agent profile
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Agent profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentProfile' }
+        '404':
+          description: Agent not found
+
+  /observer/agents/list:
+    get:
+      tags: [Agents]
+      summary: List all registered agents
+      responses:
+        '200':
+          description: List of agents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents:
+                    type: array
+                    items: { $ref: '#/components/schemas/AgentSummary' }
+
+  /observer/challenge:
+    post:
+      tags: [Agents]
+      summary: Generate verification challenge
+      parameters:
+        - name: agent_id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Challenge generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  challenge_id: { type: string }
+                  nonce: { type: string }
+                  expires_at: { type: string, format: date-time }
+
+  /observer/verify-agent:
+    post:
+      tags: [Agents]
+      summary: Verify agent with signed challenge
+      parameters:
+        - name: agent_id
+          in: query
+          required: true
+          schema: { type: string }
+        - name: signed_challenge
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Agent verified
+
+  /observer/badge/{agent_id}.svg:
+    get:
+      tags: [Agents]
+      summary: Get verification badge SVG
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: SVG badge
+          content:
+            image/svg+xml:
+              schema: { type: string }
+
+  # DID Resolution
+  /.well-known/did.json:
+    get:
+      tags: [DID Resolution]
+      summary: Get OP root DID document
+      description: Resolves did:web:observerprotocol.org
+      responses:
+        '200':
+          description: DID document
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DIDDocument' }
+
+  /agents/{agent_id}/did.json:
+    get:
+      tags: [DID Resolution]
+      summary: Get agent DID document
+      description: Resolves did:web:observerprotocol.org:agents:{agent_id}
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: DID document
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DIDDocument' }
+        '404':
+          description: Agent not found
+
+  /orgs/{org_id}/did.json:
+    get:
+      tags: [DID Resolution]
+      summary: Get organization DID document
+      description: Resolves did:web:observerprotocol.org:orgs:{org_id}
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: DID document
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DIDDocument' }
+        '404':
+          description: Organization not found
+
+  /api/v1/resolve:
+    get:
+      tags: [DID Resolution]
+      summary: Universal DID resolver
+      description: Resolve any did:web DID to its document
+      parameters:
+        - name: did
+          in: query
+          required: true
+          schema: { type: string, example: did:web:observerprotocol.org:agents:abc123 }
+      responses:
+        '200':
+          description: DID document
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DIDDocument' }
+        '400':
+          description: Invalid DID
+        '404':
+          description: DID not found
+
+  /agents/{agent_id}/keys:
+    put:
+      tags: [DID Resolution]
+      summary: Rotate agent key
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_public_key]
+              properties:
+                new_public_key: { type: string }
+      responses:
+        '200':
+          description: Key rotated
+
+  # VAC
+  /vac/{agent_id}:
+    get:
+      tags: [VAC]
+      summary: Get active VAC credential
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: include_extensions
+          in: query
+          schema: { type: boolean, default: true }
+      responses:
+        '200':
+          description: VAC credential
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerifiablePresentation' }
+        '403':
+          description: Agent not verified
+        '404':
+          description: VAC not found
+
+  /vac/{agent_id}/refresh:
+    post:
+      tags: [VAC]
+      summary: Manually refresh VAC credential
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: force
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: VAC refreshed
+
+  /vac/{agent_id}/history:
+    get:
+      tags: [VAC]
+      summary: Get VAC history
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10 }
+      responses:
+        '200':
+          description: VAC history
+
+  /vac/{agent_id}/attestations:
+    get:
+      tags: [VAC]
+      summary: Get partner attestations for agent
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: partner_type
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Attestations list
+
+  /vac/partners:
+    get:
+      tags: [Partners]
+      summary: List registered partners
+      parameters:
+        - name: partner_type
+          in: query
+          schema: { type: string }
+        - name: is_active
+          in: query
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: Partners list
+
+  /vac/partners/register:
+    post:
+      tags: [Partners]
+      summary: Register new partner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [partner_name, partner_type, public_key]
+              properties:
+                partner_name: { type: string }
+                partner_type: { type: string, enum: [corpo, verifier, counterparty, infrastructure] }
+                public_key: { type: string }
+                webhook_url: { type: string }
+                metadata: { type: object }
+      responses:
+        '200':
+          description: Partner registered
+
+  /vac/partners/{partner_id}/attest:
+    post:
+      tags: [Partners]
+      summary: Issue attestation
+      parameters:
+        - name: partner_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, claims]
+              properties:
+                agent_id: { type: string }
+                claims: { type: object }
+                credential_id: { type: string }
+                expires_in_days: { type: integer }
+                attestation_signature: { type: string }
+      responses:
+        '200':
+          description: Attestation issued
+
+  /vac/{credential_id}/counterparty:
+    post:
+      tags: [Partners]
+      summary: Add counterparty metadata
+      parameters:
+        - name: credential_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [counterparty_id, metadata]
+              properties:
+                counterparty_id: { type: string }
+                metadata: { type: object }
+                ipfs_cid: { type: string }
+      responses:
+        '200':
+          description: Metadata added
+
+  # Verifiable Presentations
+  /vp/verify:
+    post:
+      tags: [Verifiable Presentations]
+      summary: Verify a Verifiable Presentation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vp]
+              properties:
+                vp: { type: object }
+                holder_public_key_hex: { type: string }
+      responses:
+        '200':
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid: { type: boolean }
+                  structure: { type: object }
+                  vc_results: { type: array }
+                  vp_proof: { type: object }
+
+  /vp/submit:
+    post:
+      tags: [Verifiable Presentations]
+      summary: Submit a VP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vp, agent_id]
+              properties:
+                vp: { type: object }
+                agent_id: { type: string }
+      responses:
+        '200':
+          description: VP submitted
+
+  /vp/reconstruct:
+    post:
+      tags: [Verifiable Presentations]
+      summary: Reconstruct VP for agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id]
+              properties:
+                agent_id: { type: string }
+                holder_private_key_hex: { type: string }
+                force_regenerate: { type: boolean, default: false }
+      responses:
+        '200':
+          description: VP reconstructed
+
+  # Transactions
+  /observer/submit-transaction:
+    post:
+      tags: [Transactions]
+      summary: Submit verified transaction
+      parameters:
+        - name: agent_id
+          in: query
+          required: true
+          schema: { type: string }
+        - name: protocol
+          in: query
+          required: true
+          schema: { type: string }
+        - name: transaction_reference
+          in: query
+          required: true
+          schema: { type: string }
+        - name: timestamp
+          in: query
+          required: true
+          schema: { type: string }
+        - name: signature
+          in: query
+          required: true
+          schema: { type: string }
+        - name: optional_metadata
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Transaction submitted
+
+  /observer/feed:
+    get:
+      tags: [Transactions]
+      summary: Get verified events feed
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+      responses:
+        '200':
+          description: Events feed
+
+  /observer/trends:
+    get:
+      tags: [Transactions]
+      summary: Get protocol trends
+      responses:
+        '200':
+          description: Trends data
+
+  /observer/transactions:
+    get:
+      tags: [Transactions]
+      summary: Get transactions
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+        - name: agent_id
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Transactions list
+
+  # Organizations
+  /observer/register-org:
+    post:
+      tags: [Organizations]
+      summary: Register organization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, domain, master_public_key]
+              properties:
+                name: { type: string }
+                domain: { type: string }
+                master_public_key: { type: string }
+                revocation_public_key: { type: string }
+                key_type: { type: string }
+                display_name: { type: string }
+                description: { type: string }
+                contact_email: { type: string }
+                metadata: { type: object }
+      responses:
+        '201':
+          description: Organization registered
+
+  /observer/orgs:
+    get:
+      tags: [Organizations]
+      summary: List organizations
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, default: active }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+      responses:
+        '200':
+          description: Organizations list
+
+  /observer/orgs/{org_id}:
+    get:
+      tags: [Organizations]
+      summary: Get organization details
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: include_keys
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Organization details
+
+  /observer/orgs/{org_id}/revoke:
+    post:
+      tags: [Organizations]
+      summary: Revoke organization
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+                revocation_signature: { type: string }
+      responses:
+        '200':
+          description: Organization revoked
+
+  # AIP Endpoints
+  /aip/did/resolve/{did}:
+    get:
+      tags: [AIP]
+      summary: Resolve DID (AIP)
+      parameters:
+        - name: did
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: DID resolved
+
+  /aip/type-registry/{category}:
+    get:
+      tags: [AIP]
+      summary: Get Type Registry values
+      parameters:
+        - name: category
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Type registry values
+
+  /aip/credentials/kyb:
+    post:
+      tags: [AIP]
+      summary: Issue KYB credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_did, agent_did, legal_entity_id]
+              properties:
+                org_did: { type: string }
+                agent_did: { type: string }
+                legal_entity_id: { type: string }
+                jurisdiction: { type: string }
+                compliance_status: { type: string }
+      responses:
+        '200':
+          description: KYB credential issued
+
+  /aip/credentials/delegation:
+    post:
+      tags: [AIP]
+      summary: Issue delegation credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_did, agent_did, scope]
+              properties:
+                org_did: { type: string }
+                agent_did: { type: string }
+                scope: { type: array, items: { type: string } }
+                constraints: { type: object }
+                expires_at: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Delegation credential issued
+
+  /aip/credentials/kyb/{id}:
+    get:
+      tags: [AIP]
+      summary: Get KYB credential
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: KYB credential
+
+  /aip/credentials/delegation/{id}:
+    get:
+      tags: [AIP]
+      summary: Get delegation credential
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Delegation credential
+
+  /aip/credential-status/{id}:
+    get:
+      tags: [AIP]
+      summary: Check credential status
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Credential status
+
+  /aip/chain/verify/{id}:
+    get:
+      tags: [AIP]
+      summary: Verify delegation chain
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Chain verification result
+
+  /aip/revoke:
+    post:
+      tags: [AIP]
+      summary: Revoke credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [credential_id, reason]
+              properties:
+                credential_id: { type: string }
+                reason: { type: string }
+                revoked_by: { type: string }
+      responses:
+        '200':
+          description: Credential revoked
+
+  /aip/remediation/build:
+    post:
+      tags: [AIP]
+      summary: Build remediation envelope
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agent_did: { type: string }
+                reason: { type: string }
+                score: { type: number }
+                threshold: { type: number }
+      responses:
+        '200':
+          description: Remediation envelope
+
+components:
+  schemas:
+    Protocol:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        category: { type: string }
+        status: { type: string }
+        description: { type: string }
+        official_url: { type: string }
+        launch_date: { type: string, format: date }
+
+    DIDDocument:
+      type: object
+      required: [id, '@context', verificationMethod]
+      properties:
+        id:
+          type: string
+          example: did:web:observerprotocol.org:agents:abc123
+        '@context':
+          type: array
+          items: { type: string }
+          example: ['https://www.w3.org/ns/did/v1']
+        verificationMethod:
+          type: array
+          items:
+            $ref: '#/components/schemas/VerificationMethod'
+        authentication:
+          type: array
+          items: { type: string }
+        assertionMethod:
+          type: array
+          items: { type: string }
+
+    VerificationMethod:
+      type: object
+      properties:
+        id:
+          type: string
+          example: did:web:observerprotocol.org:agents:abc123#key-1
+        type:
+          type: string
+          example: Ed25519VerificationKey2020
+        controller:
+          type: string
+          example: did:web:observerprotocol.org:agents:abc123
+        publicKeyMultibase:
+          type: string
+          description: Base58btc encoded public key with 'z' prefix
+          example: z6MkhaXg...'
+
+    AgentProfile:
+      type: object
+      properties:
+        agent_id: { type: string }
+        agent_name: { type: string }
+        alias: { type: string }
+        framework: { type: string }
+        legal_entity_id: { type: string }
+        verified: { type: boolean }
+        verified_at: { type: string, format: date-time }
+        first_seen: { type: string, format: date-time }
+        verified_tx_count: { type: integer }
+        badge_url: { type: string }
+        profile_url: { type: string }
+        wallet_standard: { type: string }
+        chains: { type: array, items: { type: string } }
+
+    AgentSummary:
+      type: object
+      properties:
+        agent_id: { type: string }
+        agent_name: { type: string }
+        alias: { type: string }
+        verified: { type: boolean }
+        total_transactions: { type: integer }
+        unique_counterparties: { type: integer }
+        last_rail: { type: string }
+
+    VerifiableCredential:
+      type: object
+      properties:
+        '@context':
+          type: array
+          items: { type: string }
+        id: { type: string }
+        type:
+          type: array
+          items: { type: string }
+        issuer:
+          oneOf:
+            - { type: string }
+            - { type: object }
+        issuanceDate: { type: string, format: date-time }
+        expirationDate: { type: string, format: date-time }
+        credentialSubject: { type: object }
+        proof: { type: object }
+
+    VerifiablePresentation:
+      type: object
+      properties:
+        '@context':
+          type: array
+          items: { type: string }
+        id: { type: string }
+        type:
+          type: array
+          items: { type: string }
+        holder: { type: string }
+        verifiableCredential:
+          type: array
+          items:
+            $ref: '#/components/schemas/VerifiableCredential'
+        proof: { type: object }
+
+    VACCredential:
+      type: object
+      properties:
+        credential_id: { type: string }
+        total_transactions: { type: integer }
+        total_volume_sats: { type: integer }
+        unique_counterparties: { type: integer }
+        rails_used: { type: array, items: { type: string } }
+        issued_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+
+    Transaction:
+      type: object
+      properties:
+        event_id: { type: string }
+        event_type: { type: string }
+        protocol: { type: string }
+        transaction_hash: { type: string }
+        amount_sats: { type: integer }
+        direction: { type: string }
+        verified: { type: boolean }
+        created_at: { type: string, format: date-time }

@@ -64,7 +64,10 @@ from did_document_builder import (
     build_agent_did_document,
     build_op_did_document,
 )
-from did_resolver import resolve_did, validate_did_document
+from did_resolver import resolve_did, validate_did_document, fetch_local_did_document
+
+# OP's own Ed25519 public key from environment
+OP_PUBLIC_KEY = os.environ.get("OP_PUBLIC_KEY")
 
 # Flag for crypto availability - cryptography library is confirmed available
 ECDSA_AVAILABLE = True
@@ -2626,6 +2629,36 @@ def get_org_did_document(org_id: str):
         import json as _json
         doc = _json.loads(doc)
     return doc
+
+
+@app.get("/api/v1/resolve", tags=["DID"])
+async def resolve_did_endpoint(did: str = Query(..., description="DID string to resolve")):
+    """Resolve a DID string to its DID Document (database-first)"""
+    # Parse the DID to determine type
+    if not did.startswith("did:web:"):
+        raise HTTPException(status_code=400, detail="Only did:web method is supported")
+
+    identifier = did[len("did:web:"):]
+    parts = identifier.split(":")
+
+    # Use database-first resolver for OP DIDs
+    if len(parts) >= 1 and parts[0] == "observerprotocol.org":
+        try:
+            doc, meta = fetch_local_did_document(did, parts)
+            return doc
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=404, detail=f"DID not found: {str(e)}")
+
+    # Fallback to HTTP resolver for external DIDs
+    try:
+        doc = resolve_did(did)
+        return doc
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Could not resolve DID: {str(e)}")
 
 
 class KeyRotationRequest(BaseModel):
