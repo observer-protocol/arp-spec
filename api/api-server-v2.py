@@ -5707,15 +5707,22 @@ class TRONLeaderboardEntry(BaseModel):
     total_volume: str
     rank: int
 
-def _call_tron_rail(method: str, params: dict) -> dict:
-    """Call TRON rail library via Node.js subprocess."""
-    rail_path = "/media/nvme/observer-protocol/rails/tron/index.mjs"
+def _call_tron_rail_verify(vc: dict) -> dict:
+    """Call TRON rail library via Node.js subprocess to verify a receipt VC."""
+    
+    # Escape the VC for JavaScript
+    vc_json = json.dumps(vc).replace('\\', '\\\\').replace("'", "\\'")
     
     js_code = f"""
     import('/media/nvme/observer-protocol/rails/tron/index.mjs')
-        .then(rail => {{
-            const result = rail.{method}({json.dumps(params)});
-            console.log(JSON.stringify(result));
+        .then(async (rail) => {{
+            try {{
+                const verifier = new rail.TronReceiptVerifier();
+                const result = await verifier.verifyReceipt({vc_json});
+                console.log(JSON.stringify(result));
+            }} catch (err) {{
+                console.log(JSON.stringify({{error: err.message}}));
+            }}
         }})
         .catch(err => {{
             console.log(JSON.stringify({{error: err.message}}));
@@ -5730,8 +5737,16 @@ def _call_tron_rail(method: str, params: dict) -> dict:
             timeout=30
         )
         if result.returncode == 0 and result.stdout.strip():
-            return json.loads(result.stdout.strip().split('\n')[-1])
-        return {"error": "Rail call failed", "stderr": result.stderr}
+            # Get the last line which should be the JSON result
+            lines = [l for l in result.stdout.strip().split('\n') if l.strip()]
+            for line in reversed(lines):
+                try:
+                    return json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+        if result.stderr:
+            return {"error": f"Rail error: {result.stderr[:200]}"}
+        return {"error": "Rail call failed: no valid response"}
     except subprocess.TimeoutExpired:
         return {"error": "TRON rail timeout"}
     except Exception as e:
@@ -5843,7 +5858,7 @@ async def submit_tron_receipt(body: TRONReceiptSubmitRequest):
     # Call TRON rail for verification
     rail_result = await asyncio.get_event_loop().run_in_executor(
         _tron_executor,
-        lambda: _call_tron_rail('verifyAndPersistReceipt', {'vc': vc})
+        lambda: _call_tron_rail_verify(vc)
     )
     
     if rail_result.get('error'):
@@ -5938,7 +5953,7 @@ async def get_tron_receipts(
     List TRON receipts for a specific agent.
     """
     conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cursor = conn.cursor()
     try:
         if verified_only:
             cursor.execute("""
@@ -5965,7 +5980,9 @@ async def get_tron_receipts(
                 LIMIT %s OFFSET %s
             """, (agent_id, limit, offset))
         
-        receipts = cursor.fetchall()
+        rows = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description]
+        receipts = [dict(zip(columns, row)) for row in rows]
         
         # Get total count
         cursor.execute(
@@ -5976,7 +5993,7 @@ async def get_tron_receipts(
         
         return {
             "agent_id": agent_id,
-            "receipts": [dict(r) for r in receipts],
+            "receipts": receipts,
             "total": total,
             "limit": limit,
             "offset": offset
