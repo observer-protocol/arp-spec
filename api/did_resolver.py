@@ -61,6 +61,14 @@ def resolve_did_web(did: str) -> dict:
     else:
         url = f"https://{domain}/.well-known/did.json"
 
+    local_base = os.environ.get("DID_LOCAL_BASE_URL")
+    op_domain = os.environ.get("OP_BASE_DOMAIN", "observerprotocol.org")
+    if local_base and domain == op_domain:
+        if path_segments:
+            url = f"{local_base}/{'/'.join(path_segments)}/did.json"
+        else:
+            url = f"{local_base}/.well-known/did.json"
+
     timeout = float(os.environ.get("DID_RESOLVE_TIMEOUT_SECONDS", "10"))
 
     with httpx.Client(follow_redirects=True, timeout=timeout) as client:

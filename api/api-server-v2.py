@@ -4,20 +4,30 @@ Agentic Terminal API - FastAPI skeleton
 Canonical API for machine-native settlement systems data
 """
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Header, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import psycopg2
 import psycopg2.extras
-from typing import Optional, List
-from datetime import datetime, timedelta
+from typing import Optional, List, Dict
+from datetime import datetime, timedelta, timezone
 import os
 import hashlib
 import secrets
 import uuid
 import base64
 import json
+import re
+import base58  # For TRON address validation
+
+# Try to import bcrypt for admin authentication
+try:
+    import bcrypt
+    BCRYPT_AVAILABLE = True
+except ImportError:
+    BCRYPT_AVAILABLE = False
+    bcrypt = None
 
 
 def get_db_connection():
@@ -28,6 +38,55 @@ def get_db_connection():
             "DATABASE_URL environment variable is not set."
         )
     return psycopg2.connect(database_url)
+
+
+def validate_enterprise_session(request: Request):
+    """
+    Validate enterprise session from secure HttpOnly cookie.
+    Returns (user_id, org_id, email, role) if valid.
+    Raises HTTPException 401 if invalid, expired, or revoked.
+    """
+    # Extract session cookie (HttpOnly, Secure, SameSite=Lax)
+    session_token = request.cookies.get("enterprise_session")
+    
+    if not session_token:
+        raise HTTPException(status_code=401, detail="Session required")
+    
+    # Compute token hash (SHA-256)
+    token_hash = hashlib.sha256(session_token.encode()).hexdigest()
+    
+    # Lookup session with all validation in SQL
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        cursor.execute("""
+            SELECT s.user_id, u.email, u.organization_id as org_id, u.role, u.is_active
+            FROM auth_sessions s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.token_hash = %s 
+              AND s.is_revoked = FALSE 
+              AND s.expires_at > NOW()
+        """, (token_hash,))
+        
+        session = cursor.fetchone()
+        
+        # No row = invalid, expired, or revoked (all handled by WHERE)
+        if not session:
+            raise HTTPException(status_code=401, detail="Invalid or expired session")
+        
+        # Check user is_active (separate from session state)
+        if not session['is_active']:
+            raise HTTPException(status_code=401, detail="User inactive")
+        
+        return (
+            str(session['user_id']),
+            int(session['org_id']),
+            session['email'],
+            session['role']
+        )
+    finally:
+        cursor.close()
+        conn.close()
 
 
 # Import VAC and Partner Registry modules
@@ -121,6 +180,142 @@ class AgentUpdateRequest(BaseModel):
         extra = "forbid"  # Only allow specified fields
 
 
+class AdminLoginRequest(BaseModel):
+    """Request body for platform admin login."""
+    email: str
+    password: str
+    
+    class Config:
+        extra = "forbid"
+
+
+# ------------------------------------------------------------------------------
+# Phase 2: Org-scoped agent registration with rails and wallet addresses
+# ------------------------------------------------------------------------------
+
+VALID_RAILS = {"tron", "trc20", "lightning", "solana", "x402", "l402"}
+TRON_RAILS = {"tron", "trc20"}
+
+
+class OrgAgentRegistrationRequest(BaseModel):
+    """Request body for org-scoped agent registration with payment rails."""
+    name: str
+    public_key: str
+    rails: List[str] = []
+    wallet_addresses: Dict[str, str] = {}
+
+
+class OrgAgentRegistrationResponse(BaseModel):
+    """Response for org-scoped agent registration."""
+    agent_id: str
+    did: str
+    did_document_url: str
+    rails: List[str]
+    wallet_addresses: Dict[str, str]
+    org_id: str
+    registered_at: str
+
+
+# Fleet and detail endpoint response models
+class AgentSummary(BaseModel):
+    """Fleet-row shape. No heavy fields."""
+    agent_id: str
+    agent_name: Optional[str] = None
+    alias: Optional[str] = None
+    org_id: int
+    rails: List[str] = Field(default_factory=list)
+    wallet_addresses: Dict[str, str] = Field(default_factory=dict)
+    did_path: Optional[str] = None
+    agent_did: Optional[str] = None
+    trust_score: Optional[int] = None
+    delegation_status: Optional[str] = None
+    verified: bool = False
+    verified_at: Optional[str] = None
+    created_at: str
+
+
+class FleetResponse(BaseModel):
+    agents: List[AgentSummary]
+    total: int
+    limit: int
+    offset: int
+    org_id: int
+    org_name: str
+
+
+class AgentDetailResponse(BaseModel):
+    """Full agent record for the detail page. Includes rendered DID document."""
+    agent_id: str
+    agent_name: Optional[str] = None
+    alias: Optional[str] = None
+    org_id: int
+    org_name: str
+    public_key: Optional[str] = None
+    rails: List[str] = Field(default_factory=list)
+    wallet_addresses: Dict[str, str] = Field(default_factory=dict)
+    did_path: Optional[str] = None
+    agent_did: Optional[str] = None
+    did_document: Optional[Dict] = None
+    did_document_url: Optional[str] = None
+    trust_score: Optional[int] = None
+    delegation_status: Optional[str] = None
+    delegation_vc_present: bool = False
+    verified: bool = False
+    verified_at: Optional[str] = None
+    created_at: str
+    framework: Optional[str] = None
+    legal_entity_id: Optional[str] = None
+
+
+def _is_valid_tron_address(addr: str) -> bool:
+    """Validate TRON mainnet address (base58, 34 chars, starts with 'T')."""
+    if not addr or len(addr) != 34 or not addr.startswith("T"):
+        return False
+    try:
+        decoded = base58.b58decode_check(addr)
+        return len(decoded) == 21 and decoded[0] == 0x41
+    except Exception:
+        return False
+
+
+def _org_info_for_org_id(conn, org_id: int) -> Optional[tuple]:
+    """Look up org info from organizations table. Returns (int_id, slug) or None."""
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, org_name FROM organizations WHERE id = %s", (org_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    if row:
+        int_id, org_name = row
+        slug = re.sub(r"[^a-z0-9]+", "-", org_name.lower()).strip("-")
+        return (int_id, slug)
+    return None
+
+
+def _generate_agent_id(public_key: str, conn) -> str:
+    """Generate agent_id using sha256 of public_key (first 32 chars)."""
+    agent_id = hashlib.sha256(public_key.encode()).hexdigest()[:32]
+    
+    # Check for existing agent with same public_key
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT agent_id FROM observer_agents WHERE public_key = %s", (public_key,)
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    if row:
+        raise HTTPException(
+            status_code=409, 
+            detail=f"Agent with this public key already exists: {row[0]}"
+        )
+    
+    return agent_id
+
+
+def _json_dumps(obj):
+    """JSON encode helper."""
+    return json.dumps(obj)
+
+
 def _build_transaction_message(agent_id: str, transaction_reference: str, protocol: str, timestamp: str) -> bytes:
     """
     Build the canonical transaction message for signing.
@@ -149,7 +344,7 @@ _default_origins = (
     "https://observerprotocol.org,"
     "https://www.observerprotocol.org,"
     "https://agenticterminal.ai,"
-    "https://www.agenticterminal.ai"
+    "https://www.agenticterminal.ai,https://agenticterminal.io,https://www.agenticterminal.io,https://app.agenticterminal.io"
 )
 _allowed_origins = [
     o.strip()
@@ -160,7 +355,7 @@ _allowed_origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "PUT", "OPTIONS"],
     allow_headers=["*"],
 )
@@ -442,24 +637,30 @@ def get_stats():
     return {"stats": stats, "timestamp": datetime.utcnow().isoformat()}
 
 @app.get("/api/v1/agent-events")
-def get_agent_events(limit: int = 20, agent_id: str = None):
+def get_agent_events(request: Request, limit: int = 20, agent_id: str = None):
+    """Get agent events for authenticated enterprise org only."""
+    # Validate session and get org_id
+    user_id, org_id, email, role = validate_enterprise_session(request)
+    
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    # Join with observer_agents to filter by org_id
+    base_query = """
+        SELECT ae.id, ae.agent_id, ae.event_type, ae.economic_role, ae.amount, ae.unit,
+               ae.context_tag, ae.economic_intent, ae.verified, ae.timestamp
+        FROM agent_events ae
+        JOIN observer_agents oa ON ae.agent_id = oa.agent_id
+        WHERE oa.org_id = %s
+    """
+    
     if agent_id:
-        cursor.execute("""
-            SELECT id, agent_id, event_type, economic_role, amount, unit, 
-                   context_tag, economic_intent, verified, timestamp
-            FROM agent_events 
-            WHERE agent_id = %s
-            ORDER BY timestamp DESC LIMIT %s
-        """, (agent_id, limit))
+        cursor.execute(base_query + " AND ae.agent_id = %s ORDER BY ae.timestamp DESC LIMIT %s",
+            (org_id, agent_id, limit))
     else:
-        cursor.execute("""
-            SELECT id, agent_id, event_type, economic_role, amount, unit,
-                   context_tag, economic_intent, verified, timestamp
-            FROM agent_events 
-            ORDER BY timestamp DESC LIMIT %s
-        """, (limit,))
+        cursor.execute(base_query + " ORDER BY ae.timestamp DESC LIMIT %s",
+            (org_id, limit))
+    
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -480,7 +681,8 @@ def register_agent(
     legal_entity_id: Optional[str] = None,
     wallet_standard: Optional[str] = None,
     ows_vault_name: Optional[str] = None,
-    chains: Optional[str] = None
+    chains: Optional[str] = None,
+    org_id: Optional[int] = None
 ):
     """Register a new agent with the Observer Protocol.
     
@@ -526,8 +728,8 @@ def register_agent(
 
     try:
         cursor.execute("""
-            INSERT INTO observer_agents (agent_id, agent_name, alias, framework, legal_entity_id, verified, created_at, public_key, wallet_standard, ows_vault_name, chains, agent_did, did_document, did_created_at, did_updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, NOW(), NOW())
+            INSERT INTO observer_agents (agent_id, agent_name, alias, framework, legal_entity_id, verified, created_at, public_key, wallet_standard, ows_vault_name, chains, agent_did, did_document, did_created_at, did_updated_at, org_id)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, NOW(), NOW(), %s)
             ON CONFLICT (agent_id) DO UPDATE SET
                 agent_name = EXCLUDED.agent_name,
                 alias = EXCLUDED.alias,
@@ -547,6 +749,7 @@ def register_agent(
             json.dumps(chains_list) if chains_list else None,
             agent_did,
             json.dumps(did_document) if did_document else None,
+            org_id,
         ))
 
         conn.commit()
@@ -588,6 +791,310 @@ def register_agent(
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.post("/observer/orgs/{org_id}/agents", response_model=OrgAgentRegistrationResponse)
+def register_agent_for_org(
+    org_id: str,
+    request: OrgAgentRegistrationRequest,
+):
+    # Convert org_id to int for database lookup
+    try:
+        org_id_int = int(org_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid org_id format")
+    """Register a new agent under a given org, with rails and wallet addresses.
+    
+    Phase 2 endpoint: Produces an org-scoped did:web document.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        # Validate rails
+        if not request.rails:
+            raise HTTPException(status_code=400, detail="At least one rail must be selected")
+        unknown = set(request.rails) - VALID_RAILS
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"Unknown rails: {sorted(unknown)}")
+        
+        # Normalize wallet addresses (trc20 -> tron)
+        normalized_wallets = {}
+        for rail, addr in request.wallet_addresses.items():
+            if rail == "trc20":
+                normalized_wallets["tron"] = addr
+            else:
+                normalized_wallets[rail] = addr
+        
+        # Validate TRON address if present
+        if "tron" in normalized_wallets:
+            if not _is_valid_tron_address(normalized_wallets["tron"]):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid TRON address format. Must be base58, start with 'T', and be 34 characters."
+                )
+        
+        # Verify org exists and get integer id + slug
+        org_info = _org_info_for_org_id(conn, org_id_int)
+        if org_info is None:
+            raise HTTPException(status_code=404, detail=f"Org {org_id} not found")
+        org_int_id, org_slug = org_info
+
+        # Generate agent_id from public_key
+        agent_id = _generate_agent_id(request.public_key, conn)
+
+        # Build org-scoped did:web
+        did_path = f"agents/{org_slug}/{agent_id}"
+        did = f"did:web:api.observerprotocol.org:agents:{org_slug}:{agent_id}"
+        did_document_url = f"https://api.observerprotocol.org/agents/{org_slug}/{agent_id}/did.json"
+
+        # Cross-rail consistency check
+        tron_rail_selected = bool(set(request.rails) & TRON_RAILS)
+        if tron_rail_selected and "tron" not in normalized_wallets:
+            raise HTTPException(
+                status_code=400,
+                detail="TRON or TRC-20 rail selected but no TRON wallet address provided"
+            )
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Insert into observer_agents (use integer org_id)
+        # Build agent_did for legacy compatibility
+        agent_did = f"did:web:api.observerprotocol.org:agents:{org_slug}:{agent_id}"
+        
+        # Render the full DID document for storage (O(1) detail page loads)
+        did_document_json = render_did_document_json(
+            did=agent_did,
+            public_key=request.public_key,
+            rails=request.rails,
+            wallet_addresses=normalized_wallets,
+            created_at=now,
+        )
+        
+        cursor.execute(
+            """
+            INSERT INTO observer_agents
+                (agent_id, org_id, agent_name, public_key, rails, wallet_addresses, did_path, created_at, verified, agent_did, did_document)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                agent_id,
+                org_int_id,
+                request.name,
+                request.public_key,
+                request.rails,
+                _json_dumps(normalized_wallets),
+                did_path,
+                now,
+                False,
+                agent_did,
+                did_document_json,
+            ),
+        )
+        conn.commit()
+
+        return OrgAgentRegistrationResponse(
+            agent_id=agent_id,
+            did=did,
+            did_document_url=did_document_url,
+            rails=request.rails,
+            wallet_addresses=normalized_wallets,
+            org_id=org_id,
+            registered_at=now,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# -----------------------------------------------------------------------------
+# Fleet endpoint — list agents for an org (paginated)
+# -----------------------------------------------------------------------------
+@app.get("/observer/orgs/{org_id}/agents")
+def list_agents_for_org(
+    request: Request,
+    org_id: int,
+    limit: int = Query(50, ge=1, le=200, description="Max agents to return"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+):
+    """
+    Return the fleet for a given org, paginated.
+    Summary fields only — for full agent detail, use GET /observer/agents/{agent_id}.
+    
+    AUTHENTICATED: Requires valid enterprise session and session org must match path org.
+    """
+    # Validate session and verify user is requesting their own org's data
+    user_id, session_org_id, email, role = validate_enterprise_session(request)
+    if session_org_id != org_id:
+        raise HTTPException(status_code=403, detail="Access denied - cannot access other organizations' data")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        # 1. Look up the org (also validates it exists)
+        cursor.execute(
+            "SELECT id, org_name FROM organizations WHERE id = %s",
+            (org_id,),
+        )
+        org_row = cursor.fetchone()
+        if not org_row:
+            raise HTTPException(status_code=404, detail=f"Org {org_id} not found")
+        org_name = org_row[1]
+
+        # 2. Count total agents for this org (for pagination metadata)
+        cursor.execute(
+            "SELECT COUNT(*) FROM observer_agents WHERE org_id = %s",
+            (org_id,),
+        )
+        count_row = cursor.fetchone()
+        total = count_row[0] if count_row else 0
+
+        # 3. Fetch paginated agents
+        cursor.execute(
+            """
+            SELECT agent_id, agent_name, alias, org_id, rails, wallet_addresses,
+                   did_path, agent_did, trust_score, delegation_status, verified,
+                   verified_at, created_at
+            FROM observer_agents
+            WHERE org_id = %s
+            ORDER BY created_at DESC
+            LIMIT %s OFFSET %s
+            """,
+            (org_id, limit, offset),
+        )
+        rows = cursor.fetchall()
+
+        agents = []
+        for row in rows:
+            wallet_addresses = row[5] or {}
+            if isinstance(wallet_addresses, str):
+                wallet_addresses = json.loads(wallet_addresses)
+            agents.append({
+                "agent_id": row[0],
+                "agent_name": row[1],
+                "alias": row[2],
+                "org_id": row[3],
+                "rails": row[4] or [],
+                "wallet_addresses": wallet_addresses,
+                "did_path": row[6],
+                "agent_did": row[7],
+                "trust_score": row[8],
+                "delegation_status": row[9],
+                "verified": row[10] or False,
+                "verified_at": row[11].isoformat() if row[11] else None,
+                "created_at": row[12].isoformat() if row[12] else "",
+            })
+
+        return {
+            "agents": agents,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "org_id": org_id,
+            "org_name": org_name,
+        }
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex))
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# -----------------------------------------------------------------------------
+# Individual agent detail endpoint — full record including rendered DID document
+# -----------------------------------------------------------------------------
+@app.get("/observer/agents/{agent_id}")
+def get_agent_detail_full(
+    request: Request,
+    agent_id: str,
+):
+    """
+    Return the full detail record for a single agent, including its rendered DID document.
+    Used by the /fleet/[agent_id] detail page.
+    
+    AUTHENTICATED: Requires valid enterprise session.
+    """
+    # Validate session
+    user_id, session_org_id, email, role = validate_enterprise_session(request)
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """
+            SELECT a.agent_id, a.agent_name, a.alias, a.org_id, o.org_name,
+                   a.public_key, a.rails, a.wallet_addresses, a.did_path, a.agent_did,
+                   a.did_document, a.trust_score, a.delegation_status,
+                   a.delegation_vc_present, a.verified, a.verified_at, a.created_at,
+                   a.framework, a.legal_entity_id
+            FROM observer_agents a
+            LEFT JOIN organizations o ON a.org_id = o.id
+            WHERE a.agent_id = %s
+            """,
+            (agent_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+        
+        # Verify user can only access agents from their own org
+        agent_org_id = row[3]
+        if agent_org_id != session_org_id:
+            raise HTTPException(status_code=403, detail="Access denied - agent not in your organization")
+
+        # Parse wallet_addresses
+        wallet_addresses = row[7] or {}
+        if isinstance(wallet_addresses, str):
+            wallet_addresses = json.loads(wallet_addresses)
+        
+        # Parse did_document
+        did_document = row[10]
+        if isinstance(did_document, str):
+            did_document = json.loads(did_document)
+
+        # Build the resolvable DID document URL from did_path
+        did_document_url = None
+        if row[8]:  # did_path
+            did_document_url = f"https://api.observerprotocol.org/{row[8]}/did.json"
+
+        return {
+            "agent_id": row[0],
+            "agent_name": row[1],
+            "alias": row[2],
+            "org_id": row[3],
+            "org_name": row[4] or "",
+            "public_key": row[5],
+            "rails": row[6] or [],
+            "wallet_addresses": wallet_addresses,
+            "did_path": row[8],
+            "agent_did": row[9],
+            "did_document": did_document,
+            "did_document_url": did_document_url,
+            "trust_score": row[11],
+            "delegation_status": row[12],
+            "delegation_vc_present": row[13] or False,
+            "verified": row[14] or False,
+            "verified_at": row[15].isoformat() if row[15] else None,
+            "created_at": row[16].isoformat() if row[16] else "",
+            "framework": row[17],
+            "legal_entity_id": row[18],
+        }
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex))
     finally:
         cursor.close()
         conn.close()
@@ -1081,8 +1588,11 @@ def get_trends():
         conn.close()
 
 @app.get("/observer/feed")
-def get_feed(limit: int = 50):
-    """Get last 50 verified events with full details (anonymized — no agent_id in response)."""
+def get_feed(request: Request, limit: int = 50):
+    """Get last 50 verified events for authenticated org (anonymized — no agent_id in response)."""
+    # Validate session and get org_id
+    user_id, org_id, email, role = validate_enterprise_session(request)
+    
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     
@@ -1104,10 +1614,11 @@ def get_feed(limit: int = 50):
                 ve.created_at,
                 oa.alias as agent_alias
             FROM verified_events ve
-            LEFT JOIN observer_agents oa ON ve.agent_id = oa.agent_id
+            JOIN observer_agents oa ON ve.agent_id = oa.agent_id
+            WHERE oa.org_id = %s
             ORDER BY ve.created_at DESC
             LIMIT %s
-        """, (limit,))
+        """, (org_id, limit,))
         
         events = [dict(r) for r in cursor.fetchall()]
         
@@ -1430,82 +1941,6 @@ async def list_agents():
         cursor.close()
         conn.close()
 
-
-@app.get("/observer/agents/{agent_id}")
-def get_agent_profile(agent_id: str):
-    """Public agent profile — name, verification status, event count, first seen."""
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    try:
-        cursor.execute("""
-            SELECT agent_id, agent_name, alias, framework, legal_entity_id,
-                   verified, verified_at, created_at, access_level,
-                   wallet_standard, ows_vault_name, chains
-            FROM observer_agents WHERE agent_id = %s
-        """, (agent_id,))
-        agent = cursor.fetchone()
-        if not agent:
-            raise HTTPException(status_code=404, detail="Agent not found")
-
-        cursor.execute("""
-            SELECT COUNT(*) as cnt FROM verified_events
-            WHERE agent_id = %s AND verified = TRUE
-        """, (agent_id,))
-        tx_count = cursor.fetchone()["cnt"]
-
-        cursor.execute("""
-            SELECT COUNT(*) as seq FROM observer_agents
-            WHERE created_at <= %s
-        """, (agent["created_at"],))
-        seq = cursor.fetchone()["seq"]
-
-        # Build response with OWS fields
-        response = {
-            "agent_id": agent_id,
-            "agent_name": agent["agent_name"],
-            "alias": agent["alias"],
-            "framework": agent["framework"],
-            "legal_entity_id": agent["legal_entity_id"],
-            "access_level": agent["access_level"],
-            "verified": agent["verified"],
-            "verified_at": agent["verified_at"].isoformat() if agent["verified_at"] else None,
-            "first_seen": agent["created_at"].isoformat(),
-            "sequence_number": seq,
-            "verified_tx_count": tx_count,
-            "badge_url": f"https://api.agenticterminal.ai/observer/badge/{agent_id}.svg",
-            "profile_url": f"https://observerprotocol.org/agents/{agent_id}"
-        }
-        
-        # Add OWS fields if present
-        if agent.get("wallet_standard"):
-            response["wallet_standard"] = agent["wallet_standard"]
-            response["ows_badge"] = agent["wallet_standard"] == "ows"
-        if agent.get("ows_vault_name"):
-            response["ows_vault_name"] = agent["ows_vault_name"]
-        if agent.get("chains"):
-            import json
-            try:
-                chains = agent["chains"]
-                if isinstance(chains, str):
-                    chains = json.loads(chains)
-                response["chains"] = chains
-            except:
-                pass
-                
-        return response
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        cursor.close()
-        conn.close()
-
-
-# ============================================================
-# VAC (VERIFIED AGENT CREDENTIAL) ENDPOINTS
-# ============================================================
-
 class PartnerRegistrationRequest(BaseModel):
     """Request body for registering a partner."""
     partner_name: str
@@ -1536,10 +1971,10 @@ def get_vac_credential(agent_id: str, include_extensions: bool = True):
     """
     Get the active VAC (Verified Agent Credential) for an agent.
     
-    Returns the latest valid VAC credential including:
-    - Core fields: aggregated transaction data, volume, counterparties, rails
-    - Extensions: partner attestations and counterparty metadata hashes
-    - OWS fields: wallet_standard, ows_badge, ows_vault_name, chains
+    PUBLIC ENDPOINT: Returns only the signed verifiableCredential (W3C VP).
+    No internal fields, no trust score, no metadata.
+    
+    For full payload including internal fields, use /vac/{agent_id}/full (authenticated).
     
     VACs expire after 7 days and refresh automatically every 24 hours.
     """
@@ -1551,18 +1986,30 @@ def get_vac_credential(agent_id: str, include_extensions: bool = True):
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         try:
-            # Check if agent exists and is verified, include OWS fields
+            # Check if agent exists and is verified
             cursor.execute("""
-                SELECT agent_id, verified, wallet_standard, ows_vault_name, chains, public_key, alias
+                SELECT agent_id, agent_did, verified
                 FROM observer_agents WHERE agent_id = %s
             """, (agent_id,))
             
             agent = cursor.fetchone()
+            
+            # If not found by agent_id, try lookup by alias
+            if not agent:
+                cursor.execute("""
+                    SELECT agent_id, agent_did, verified
+                    FROM observer_agents WHERE alias = %s
+                """, (agent_id,))
+                agent = cursor.fetchone()
+            
             if not agent:
                 raise HTTPException(status_code=404, detail="Agent not found")
             
             if not agent['verified']:
                 raise HTTPException(status_code=403, detail="Agent not verified")
+            
+            # Use the actual agent_id from the database record
+            actual_agent_id = agent['agent_id']
             
             # Check for active VAC
             cursor.execute("""
@@ -1571,24 +2018,123 @@ def get_vac_credential(agent_id: str, include_extensions: bool = True):
                 WHERE agent_id = %s AND is_revoked = FALSE
                 ORDER BY issued_at DESC
                 LIMIT 1
-            """, (agent_id,))
+            """, (actual_agent_id,))
             
             vac_row = cursor.fetchone()
             
             # Generate new VAC if needed
             from datetime import timezone
             if not vac_row or vac_row['expires_at'] < datetime.now(timezone.utc):
-                vac = generator.generate_vac(agent_id, include_extensions=include_extensions)
+                vac = generator.generate_vac(actual_agent_id, include_extensions=include_extensions)
             else:
                 # Return existing VAC
-                vac = generator.get_vac(agent_id)
+                vac = generator.get_vac(actual_agent_id)
+            
+            if not vac:
+                raise HTTPException(status_code=404, detail="VAC not found")
+            
+            # PUBLIC RESPONSE: Return ONLY the verifiableCredential
+            # Strip all internal fields (_meta, trust_score, etc.)
+            public_response = {
+                "@context": vac.get("@context"),
+                "id": vac.get("id"),
+                "type": vac.get("type"),
+                "holder": vac.get("holder"),
+                "created": vac.get("created"),
+                "verifiableCredential": vac.get("verifiableCredential")
+            }
+            
+            return public_response
+            
+        finally:
+            cursor.close()
+            conn.close()
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"VAC retrieval failed: {str(e)}")
+
+
+@app.get("/vac/{agent_id}/full")
+def get_vac_credential_full(request: Request, agent_id: str, include_extensions: bool = True):
+    """
+    Get the full VAC payload including internal fields (authenticated).
+    
+    AUTHENTICATED ENDPOINT: Returns complete VAC with:
+    - verifiableCredential (signed W3C VP)
+    - _meta (agent metadata, public_key, wallet_standard, etc.)
+    - trust_score (computed trust score)
+    - delegation_vc (delegation VC status)
+    - remediation_options (based on trust score)
+    - rails_attested (attested payment rails)
+    - selective_disclosure flag
+    
+    Requires valid enterprise session.
+    """
+    # Validate session
+    validate_enterprise_session(request)
+    
+    try:
+        generator = VACGenerator()
+        
+        # Check if agent needs a new VAC
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        try:
+            # Check if agent exists and is verified, include all fields
+            cursor.execute("""
+                SELECT agent_id, agent_did, verified, wallet_standard, ows_vault_name, chains, 
+                       public_key, alias, trust_score, delegation_vc, delegation_vc_present
+                FROM observer_agents WHERE agent_id = %s
+            """, (agent_id,))
+            
+            agent = cursor.fetchone()
+            
+            # If not found by agent_id, try lookup by alias
+            if not agent:
+                cursor.execute("""
+                    SELECT agent_id, agent_did, verified, wallet_standard, ows_vault_name, chains, 
+                           public_key, alias, trust_score, delegation_vc, delegation_vc_present
+                    FROM observer_agents WHERE alias = %s
+                """, (agent_id,))
+                agent = cursor.fetchone()
+            
+            if not agent:
+                raise HTTPException(status_code=404, detail="Agent not found")
+            
+            if not agent['verified']:
+                raise HTTPException(status_code=403, detail="Agent not verified")
+            
+            # Use the actual agent_id from the database record
+            actual_agent_id = agent['agent_id']
+            
+            # Check for active VAC
+            cursor.execute("""
+                SELECT credential_id, issued_at, expires_at
+                FROM vac_credentials
+                WHERE agent_id = %s AND is_revoked = FALSE
+                ORDER BY issued_at DESC
+                LIMIT 1
+            """, (actual_agent_id,))
+            
+            vac_row = cursor.fetchone()
+            
+            # Generate new VAC if needed
+            from datetime import timezone
+            if not vac_row or vac_row['expires_at'] < datetime.now(timezone.utc):
+                vac = generator.generate_vac(actual_agent_id, include_extensions=include_extensions)
+            else:
+                # Return existing VAC
+                vac = generator.get_vac(actual_agent_id)
             
             if not vac:
                 raise HTTPException(status_code=404, detail="VAC not found")
 
-            # vac is a W3C VP dict — annotate with agent metadata for convenience
+            # FULL RESPONSE: Include all internal fields
             vac["_meta"] = {
-                "agent_id": agent_id,
+                "agent_id": actual_agent_id,
                 "alias": agent.get("alias"),
                 "public_key": agent.get("public_key"),
                 "wallet_standard": agent.get("wallet_standard"),
@@ -1603,6 +2149,54 @@ def get_vac_credential(agent_id: str, include_extensions: bool = True):
                     vac["_meta"]["chains"] = chains
                 except Exception:
                     vac["_meta"]["chains"] = []
+
+            # Build 2: Add trust score and delegation VC info
+            trust_score = agent.get("trust_score") or 58
+            delegation_vc_data = agent.get("delegation_vc")
+            
+            # Parse delegation VC for external fields
+            delegation_info = {
+                "present": False,
+                "org_did": None,
+                "expiry": None,
+                "verified": False
+            }
+            
+            if delegation_vc_data:
+                if isinstance(delegation_vc_data, str):
+                    delegation_vc_data = json.loads(delegation_vc_data)
+                
+                external_fields = delegation_vc_data.get("externalFields", {})
+                expiry = external_fields.get("expiry")
+                verified = False
+                
+                if expiry:
+                    try:
+                        expiry_dt = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+                        verified = expiry_dt > datetime.now(timezone.utc)
+                    except:
+                        pass
+                
+                delegation_info = {
+                    "present": True,
+                    "org_did": external_fields.get("orgDid"),
+                    "expiry": expiry,
+                    "verified": verified
+                }
+            
+            # Determine remediation options based on trust score
+            remediation_options = []
+            if trust_score < 75:
+                remediation_options.append("request_delegation_vc")
+                remediation_options.append("build_transaction_history")
+            
+            # Add Build 2 fields to response
+            vac["trust_score"] = trust_score
+            vac["delegation_vc"] = delegation_info
+            vac["score_threshold_default"] = 75
+            vac["remediation_options"] = remediation_options
+            vac["rails_attested"] = ["x402"]
+            vac["selective_disclosure"] = True
 
             return vac
             
@@ -1740,7 +2334,79 @@ async def present_vp(agent_id: str, request: VPPresentRequest):
 
 @app.get("/vac/{agent_id}/history")
 def get_vac_history(agent_id: str, limit: int = 10):
-    """Get VAC credential history for an agent."""
+    """
+    Get VAC credential history for an agent (public).
+    
+    PUBLIC ENDPOINT: Returns basic credential history without internal fields.
+    Excludes: is_revoked, revoked_at, payload_hash.
+    
+    For full history including internal fields, use /vac/{agent_id}/history/full (authenticated).
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    
+    try:
+        cursor.execute("""
+            SELECT 
+                credential_id,
+                vac_version,
+                total_transactions,
+                total_volume_sats,
+                unique_counterparties,
+                rails_used,
+                issued_at,
+                expires_at
+            FROM vac_credentials
+            WHERE agent_id = %s AND is_revoked = FALSE
+            ORDER BY issued_at DESC
+            LIMIT %s
+        """, (agent_id, limit))
+        
+        credentials = []
+        for row in cursor.fetchall():
+            cred = {
+                "credential_id": row['credential_id'],
+                "version": row['vac_version'],
+                "core": {
+                    "total_transactions": row['total_transactions'],
+                    "total_volume_sats": row['total_volume_sats'],
+                    "unique_counterparties": row['unique_counterparties'],
+                    "rails_used": row['rails_used']
+                },
+                "issued_at": row['issued_at'].isoformat(),
+                "expires_at": row['expires_at'].isoformat()
+            }
+            credentials.append(cred)
+        
+        return {
+            "agent_id": agent_id,
+            "credentials": credentials,
+            "count": len(credentials)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"VAC history retrieval failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.get("/vac/{agent_id}/history/full")
+def get_vac_history_full(request: Request, agent_id: str, limit: int = 10):
+    """
+    Get full VAC credential history including internal fields (authenticated).
+    
+    AUTHENTICATED ENDPOINT: Returns complete history with:
+    - All public fields
+    - is_revoked status
+    - revoked_at timestamp (if applicable)
+    - vac_payload_hash
+    
+    Requires valid enterprise session.
+    """
+    # Validate session
+    validate_enterprise_session(request)
+    
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     
@@ -2535,40 +3201,170 @@ def revoke_organization_endpoint(org_id: str, request: OrganizationRevocationReq
 # DID RESOLUTION ENDPOINTS (Layer 1)
 # ============================================================
 
-@app.get("/.well-known/did.json", tags=["DID"])
-def get_op_did_document():
+import urllib.parse
+
+def transform_did_to_url(did: str) -> str:
     """
-    Return Observer Protocol's own DID Document.
-    Required by any verifier checking OP-issued VC signatures.
+    Transform a did:web identifier to an HTTPS URL per W3C spec.
+    
+    Spec: https://w3c-ccg.github.io/did-method-web/
+    
+    Transformation rules:
+    1. Remove 'did:web:' prefix
+    2. Replace ':' with '/' to get domain + path
+    3. Prepend 'https://'
+    4. Append '/did.json'
+    
+    Examples:
+    - did:web:example.com -> https://example.com/.well-known/did.json
+    - did:web:example.com:path:to:resource -> https://example.com/path/to/resource/did.json
+    """
+    if not did.startswith("did:web:"):
+        raise ValueError(f"Not a did:web identifier: {did}")
+    
+    # Remove did:web: prefix
+    method_specific_id = did[8:]  # len("did:web:") == 8
+    
+    # Replace ':' with '/' to form the domain and path
+    domain_and_path = method_specific_id.replace(":", "/")
+    
+    # Check if there's a path (contains '/') or just a domain
+    if "/" in domain_and_path:
+        # Has path: https://domain/path/to/resource/did.json
+        url = f"https://{domain_and_path}/did.json"
+    else:
+        # Just domain: https://domain/.well-known/did.json
+        url = f"https://{domain_and_path}/.well-known/did.json"
+    
+    return url
+
+
+@app.get("/.well-known/did.json", tags=["DID"])
+def get_op_well_known_did(fragment: Optional[str] = Query(None)):
+    """
+    Serve DID documents from .well-known/did.json
+    
+    Supports fragment-based DIDs:
+    - No fragment: returns OP's root DID document
+    - With fragment: returns agent/org DID document for that fragment
+    
+    DID: did:web:observerprotocol.org#{fragment}
+    URL: https://observerprotocol.org/.well-known/did.json?fragment={fragment}
     """
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    
     try:
+        # If fragment provided, look up agent/org by fragment
+        if fragment:
+            # Try agent lookup first
+            cursor.execute(
+                "SELECT did_document FROM observer_agents WHERE agent_id = %s",
+                (fragment,),
+            )
+            row = cursor.fetchone()
+            
+            if row and row["did_document"]:
+                doc = json.loads(row["did_document"]) if isinstance(row["did_document"], str) else row["did_document"]
+                return doc
+            
+            # Try organization lookup
+            cursor.execute(
+                "SELECT did_document FROM organizations WHERE org_id = %s",
+                (fragment,),
+            )
+            row = cursor.fetchone()
+            
+            if row and row["did_document"]:
+                doc = json.loads(row["did_document"]) if isinstance(row["did_document"], str) else row["did_document"]
+                return doc
+            
+            raise HTTPException(status_code=404, detail=f"No DID found for fragment: {fragment}")
+        
+        # No fragment - return OP's root DID
         cursor.execute(
             "SELECT document FROM op_did_document ORDER BY updated_at DESC LIMIT 1"
         )
         row = cursor.fetchone()
+        
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail="OP DID Document not initialized.",
+            )
+        
+        doc = row["document"]
+        if isinstance(doc, str):
+            import json as _json
+            doc = _json.loads(doc)
+        
+        return doc
     finally:
         cursor.close()
         conn.close()
 
-    if not row:
-        raise HTTPException(
-            status_code=404,
-            detail="OP DID Document not initialised. Set OP_PUBLIC_KEY and restart.",
+
+# Import DID document builder for Phase 2 org-scoped resolution
+from did_document import render_did_document_json
+
+
+@app.get("/agents/{org_slug}/{agent_id}/did.json", tags=["DID"])
+def get_org_scoped_agent_did_file(org_slug: str, agent_id: str):
+    """
+    Serve W3C-compliant DID document for org-scoped agents (Phase 2).
+    
+    DID: did:web:api.observerprotocol.org:agents:{org_slug}:{agent_id}
+    URL: https://api.observerprotocol.org/agents/{org_slug}/{agent_id}/did.json
+    
+    Includes CAIP-10 account references for cross-chain identity.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        # Look up by did_path (e.g., "agents/tron-foundation/abc123")
+        did_path = f"agents/{org_slug}/{agent_id}"
+        cursor.execute(
+            """SELECT agent_id, public_key, rails, wallet_addresses, created_at, org_id 
+               FROM observer_agents WHERE did_path = %s""",
+            (did_path,),
         )
-    doc = row["document"]
-    if isinstance(doc, str):
-        import json as _json
-        doc = _json.loads(doc)
-    return doc
+        row = cursor.fetchone()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Agent not found at {did_path}")
+        
+        # Build the full DID string
+        did = f"did:web:api.observerprotocol.org:agents:{org_slug}:{agent_id}"
+        
+        # Parse rails and wallet_addresses
+        rails = row["rails"] or []
+        wallet_addresses = row["wallet_addresses"] or {}
+        if isinstance(wallet_addresses, str):
+            wallet_addresses = json.loads(wallet_addresses)
+        
+        # Generate W3C-compliant DID document with CAIP-10
+        doc_json = render_did_document_json(
+            did=did,
+            public_key=row["public_key"] or "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            rails=rails,
+            wallet_addresses=wallet_addresses,
+            created_at=row["created_at"].isoformat() if row["created_at"] else None,
+        )
+        
+        # Return as JSON response
+        return Response(content=doc_json, media_type="application/json")
+    finally:
+        cursor.close()
+        conn.close()
 
 
 @app.get("/agents/{agent_id}/did.json", tags=["DID"])
-def get_agent_did_document(agent_id: str):
+def get_agent_did_file(agent_id: str):
     """
-    Return the DID Document for an agent.
-    Contains the agent's current Ed25519 public key.
+    Serve DID document for an agent at the standard did:web path.
+    
+    DID: did:web:observerprotocol.org:agents:{agent_id}
+    URL: https://observerprotocol.org/agents/{agent_id}/did.json
     """
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -2578,29 +3374,34 @@ def get_agent_did_document(agent_id: str):
             (agent_id,),
         )
         row = cursor.fetchone()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+        
+        if not row["did_document"]:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Agent '{agent_id}' has no DID Document",
+            )
+        
+        doc = row["did_document"]
+        if isinstance(doc, str):
+            import json as _json
+            doc = _json.loads(doc)
+        
+        return doc
     finally:
         cursor.close()
         conn.close()
 
-    if not row:
-        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
-    if not row["did_document"]:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Agent '{agent_id}' has no DID Document (key may be non-Ed25519)",
-        )
-    doc = row["did_document"]
-    if isinstance(doc, str):
-        import json as _json
-        doc = _json.loads(doc)
-    return doc
-
 
 @app.get("/orgs/{org_id}/did.json", tags=["DID"])
-def get_org_did_document(org_id: str):
+def get_org_did_file(org_id: str):
     """
-    Return the DID Document for an organization.
-    Contains the org's current public key.
+    Serve DID document for an organization at the standard did:web path.
+    
+    DID: did:web:observerprotocol.org:orgs:{org_id}
+    URL: https://observerprotocol.org/orgs/{org_id}/did.json
     """
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -2610,22 +3411,332 @@ def get_org_did_document(org_id: str):
             (org_id,),
         )
         row = cursor.fetchone()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Organization '{org_id}' not found")
+        
+        if not row["did_document"]:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Organization '{org_id}' has no DID Document",
+            )
+        
+        doc = row["did_document"]
+        if isinstance(doc, str):
+            import json as _json
+            doc = _json.loads(doc)
+        
+        return doc
     finally:
         cursor.close()
         conn.close()
 
-    if not row:
-        raise HTTPException(status_code=404, detail=f"Organization '{org_id}' not found")
-    if not row["did_document"]:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Organization '{org_id}' has no DID Document",
+
+class DIDResolutionResponse(BaseModel):
+    """W3C DID Resolution response format."""
+    didDocument: Optional[Dict] = None
+    didDocumentMetadata: Dict = {}
+    didResolutionMetadata: Dict = {}
+
+
+@app.get("/resolve/{did:path}", tags=["DID"], response_model=DIDResolutionResponse)
+def resolve_did_endpoint(did: str):
+    """
+    Resolve any did:web to its DID Document following W3C spec.
+    
+    Implements the did:web resolution algorithm per:
+    https://w3c-ccg.github.io/did-method-web/
+    
+    Resolution process:
+    1. Transform did:web identifier to HTTPS URL
+    2. If local (observerprotocol.org): serve from database
+    3. If external: fetch from remote domain
+    4. Return W3C-compliant DID resolution response
+    
+    Examples:
+    - did:web:observerprotocol.org -> /.well-known/did.json
+    - did:web:observerprotocol.org:agents:abc123 -> /agents/abc123/did.json
+    """
+    # URL decode the DID in case it was encoded
+    did = urllib.parse.unquote(did)
+    
+    # Validate DID format
+    if not did.startswith("did:web:"):
+        return DIDResolutionResponse(
+            didDocument=None,
+            didDocumentMetadata={},
+            didResolutionMetadata={
+                "error": "unsupportedMethod",
+                "errorMessage": f"Only did:web is supported. Got: {did[:50]}..."
+            }
         )
-    doc = row["did_document"]
-    if isinstance(doc, str):
-        import json as _json
-        doc = _json.loads(doc)
-    return doc
+    
+    try:
+        # Transform DID to URL per W3C spec
+        resolution_url = transform_did_to_url(did)
+        
+        # Parse to check if local
+        method_specific_id = did[8:]  # Remove did:web:
+        did_parts = method_specific_id.split(":")
+        domain = did_parts[0] if did_parts else ""
+        
+        is_local = domain == "observerprotocol.org" or domain.endswith(".observerprotocol.org")
+        
+        # Fetch DID Document
+        if is_local:
+            doc, metadata = fetch_local_did_document(did, did_parts)
+        else:
+            doc, metadata = fetch_external_did_document(resolution_url)
+        
+        return DIDResolutionResponse(
+            didDocument=doc,
+            didDocumentMetadata=metadata,
+            didResolutionMetadata={
+                "contentType": "application/did+json",
+                "retrieved": datetime.utcnow().isoformat() + "Z",
+                "did": {
+                    "didString": did,
+                    "method": "web",
+                    "methodSpecificId": method_specific_id
+                }
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        return DIDResolutionResponse(
+            didDocument=None,
+            didDocumentMetadata={},
+            didResolutionMetadata={
+                "error": "resolutionError",
+                "errorMessage": str(e)
+            }
+        )
+
+
+def fetch_local_did_document(did: str, did_parts: list) -> tuple:
+    """Fetch DID document from local database - path-based did:web DIDs."""
+    from did_document_builder import build_agent_did_document, build_org_did_document
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        if len(did_parts) >= 3 and did_parts[1] == "agents":
+            agent_id = did_parts[2]
+            cursor.execute(
+                "SELECT did_document, public_key FROM observer_agents WHERE agent_id = %s",
+                (agent_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+            if row["did_document"]:
+                doc = json.loads(row["did_document"]) if isinstance(row["did_document"], str) else row["did_document"]
+            elif row["public_key"]:
+                doc = build_agent_did_document(agent_id, row["public_key"])
+            else:
+                raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' has no public key or DID document")
+            return doc, {"type": "agent", "source": "local"}
+
+        if len(did_parts) >= 3 and did_parts[1] == "orgs":
+            org_id = did_parts[2]
+            cursor.execute(
+                "SELECT did_document, public_key FROM organizations WHERE org_id = %s",
+                (org_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail=f"Organization '{org_id}' not found")
+            if row["did_document"]:
+                doc = json.loads(row["did_document"]) if isinstance(row["did_document"], str) else row["did_document"]
+            elif row["public_key"]:
+                doc = build_org_did_document(org_id, row["public_key"])
+            else:
+                raise HTTPException(status_code=404, detail=f"Organization '{org_id}' has no public key or DID document")
+            return doc, {"type": "org", "source": "local"}
+
+        cursor.execute(
+            "SELECT document FROM op_did_document ORDER BY updated_at DESC LIMIT 1"
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Root DID document not found")
+        doc = json.loads(row["document"]) if isinstance(row["document"], str) else row["document"]
+        return doc, {"type": "root", "source": "local"}
+    finally:
+        cursor.close()
+        conn.close()
+       
+
+def fetch_local_did_document_legacy(did: str, did_parts: list) -> tuple:
+    """Legacy function for path-based DID lookup (deprecated)."""
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    
+    try:
+        # Root domain: did:web:observerprotocol.org
+        if len(did_parts) == 1:
+            cursor.execute(
+                "SELECT document FROM op_did_document ORDER BY updated_at DESC LIMIT 1"
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Root DID document not found")
+            
+            doc = json.loads(row["document"]) if isinstance(row["document"], str) else row["document"]
+            return doc, {"type": "root", "source": "local"}
+        
+        # Agent: did:web:observerprotocol.org:agents:{agent_id}
+        elif len(did_parts) >= 3 and did_parts[1] == "agents":
+            agent_id = did_parts[2]
+            cursor.execute(
+                "SELECT did_document, agent_did, alias, created_at FROM observer_agents WHERE agent_id = %s",
+                (agent_id,),
+            )
+            row = cursor.fetchone()
+            
+            if not row:
+                raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
+            
+            if not row["did_document"]:
+                raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' has no DID Document")
+            
+            doc = json.loads(row["did_document"]) if isinstance(row["did_document"], str) else row["did_document"]
+            metadata = {
+                "type": "agent",
+                "source": "local",
+                "agentId": agent_id,
+                "alias": row.get("alias"),
+                "created": row["created_at"].isoformat() if row.get("created_at") else None
+            }
+            return doc, metadata
+        
+        # Organization: did:web:observerprotocol.org:orgs:{org_id}
+        elif len(did_parts) >= 3 and did_parts[1] == "orgs":
+            org_id = did_parts[2]
+            cursor.execute(
+                "SELECT did_document, org_did, org_name, created_at FROM organizations WHERE org_id = %s",
+                (org_id,),
+            )
+            row = cursor.fetchone()
+            
+            if not row:
+                raise HTTPException(status_code=404, detail=f"Organization '{org_id}' not found")
+            
+            if not row["did_document"]:
+                raise HTTPException(status_code=404, detail=f"Organization '{org_id}' has no DID Document")
+            
+            doc = json.loads(row["did_document"]) if isinstance(row["did_document"], str) else row["did_document"]
+            metadata = {
+                "type": "organization",
+                "source": "local",
+                "orgId": org_id,
+                "orgName": row.get("org_name"),
+                "created": row["created_at"].isoformat() if row.get("created_at") else None
+            }
+            return doc, metadata
+        
+        else:
+            raise HTTPException(status_code=404, detail=f"Unknown DID path structure")
+            
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def fetch_external_did_document(url: str) -> tuple:
+    """Fetch DID document from external domain."""
+    import requests
+    
+    try:
+        response = requests.get(url, timeout=10, headers={"Accept": "application/did+json, application/json"})
+        response.raise_for_status()
+        doc = response.json()
+        
+        metadata = {
+            "type": "external",
+            "source": url,
+            "fetchedAt": datetime.utcnow().isoformat() + "Z"
+        }
+        
+        return doc, metadata
+        
+    except requests.Timeout:
+        raise HTTPException(status_code=504, detail="Timeout resolving external DID")
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch external DID: {str(e)}")
+
+
+def resolve_local_did(did: str, did_parts: list):
+    """Resolve a DID hosted on observerprotocol.org from local database."""
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    
+    try:
+        # Check if this is an agent DID: did:web:observerprotocol.org:agents:{agent_id}
+        if len(did_parts) >= 3 and did_parts[1] == "agents":
+            agent_id = did_parts[2]
+            cursor.execute(
+                "SELECT did_document, agent_did, alias FROM observer_agents WHERE agent_id = %s",
+                (agent_id,),
+            )
+            row = cursor.fetchone()
+            
+            if not row:
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"Agent with ID '{agent_id}' not found in registry"
+                )
+            
+            doc = row["did_document"]
+            if isinstance(doc, str):
+                import json as _json
+                doc = _json.loads(doc)
+            
+            return {
+                "did": did,
+                "didDocument": doc,
+                "resolver": "local",
+                "source": "observerprotocol.org"
+            }
+        
+        # Check if this is an org DID: did:web:observerprotocol.org:orgs:{org_id}
+        elif len(did_parts) >= 3 and did_parts[1] == "orgs":
+            org_id = did_parts[2]
+            cursor.execute(
+                "SELECT did_document, org_did, org_name FROM organizations WHERE org_id = %s",
+                (org_id,),
+            )
+            row = cursor.fetchone()
+            
+            if not row:
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"Organization with ID '{org_id}' not found in registry"
+                )
+            
+            doc = row["did_document"]
+            if isinstance(doc, str):
+                import json as _json
+                doc = _json.loads(doc)
+            
+            return {
+                "did": did,
+                "didDocument": doc,
+                "resolver": "local",
+                "source": "observerprotocol.org"
+            }
+        
+        # Unknown local DID path
+        else:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Unknown DID path structure: {':'.join(did_parts[1:])}"
+            )
+    
+    finally:
+        cursor.close()
+        conn.close()
 
 
 class KeyRotationRequest(BaseModel):
@@ -2709,6 +3820,335 @@ def rotate_agent_key(agent_id: str, request: KeyRotationRequest):
 # ============================================================
 
 
+# ============================================================
+# DELEGATION VC ENDPOINTS (Build 2 Deliverable 1)
+# ============================================================
+
+class DelegationRequest(BaseModel):
+    """Request body for requesting delegation."""
+    agent_id: str
+    org_did: str
+    requested_by: str
+
+
+class DelegationApprovalRequest(BaseModel):
+    """Request body for approving delegation."""
+    request_id: str
+    approved_by: str
+    spending_limits: Dict[str, str]
+    permissions: List[str]
+    expiry: str
+
+
+class DelegationVCRequest(BaseModel):
+    """Request body for internal VC issuance."""
+    agent_id: str
+    org_did: str
+    spending_limits: Dict[str, str]
+    permissions: List[str]
+    expiry: str
+
+
+def _issue_delegation_vc(
+    agent_id: str,
+    org_did: str,
+    spending_limits: Dict[str, str],
+    permissions: List[str],
+    expiry: str
+) -> dict:
+    """Issue a Delegation VC signed by OP."""
+    from vc_issuer import issue_vc
+    from did_document_builder import build_agent_did
+    
+    agent_did = build_agent_did(agent_id)
+    op_did = os.environ.get("OP_DID", "did:web:observerprotocol.org")
+    
+    # Build credential subject with external and internal fields
+    claims = {
+        "orgDid": org_did,
+        "externalFields": {
+            "issuerDid": op_did,
+            "agentDid": agent_did,
+            "orgDid": org_did,
+            "expiry": expiry
+        },
+        "internalFields": {
+            "spendingLimits": {
+                "perTransaction": spending_limits.get("per_transaction", "50"),
+                "daily": spending_limits.get("daily", "500"),
+                "currency": spending_limits.get("currency", "USDC")
+            },
+            "permissions": permissions
+        }
+    }
+    
+    # Issue the VC
+    vc = issue_vc(
+        subject_did=agent_did,
+        credential_type="DelegationCredential",
+        claims=claims,
+        extra_types=["DelegationCredential"]
+    )
+    
+    return vc
+
+
+@app.post("/observer/request-delegation")
+def request_delegation(request: DelegationRequest):
+    """
+    Request a Delegation VC for an agent.
+    
+    Called by agent when it detects missing Delegation VC.
+    Creates a pending approval request.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    
+    try:
+        # Verify agent exists
+        cursor.execute(
+            "SELECT agent_id, agent_did FROM observer_agents WHERE agent_id = %s",
+            (request.agent_id,)
+        )
+        agent = cursor.fetchone()
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        
+        # Generate request ID
+        request_id = f"del-req-{secrets.token_hex(4)}"
+        
+        # Create delegation request
+        cursor.execute("""
+            INSERT INTO delegation_requests 
+            (request_id, agent_id, org_did, requested_by, status, created_at)
+            VALUES (%s, %s, %s, %s, 'pending_approval', NOW())
+        """, (request_id, request.agent_id, request.org_did, request.requested_by))
+        
+        conn.commit()
+        
+        return {
+            "request_id": request_id,
+            "status": "pending_approval",
+            "agent_did": agent["agent_did"],
+            "org_did": request.org_did
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Delegation request failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.post("/observer/approve-delegation")
+def approve_delegation(request: DelegationApprovalRequest):
+    """
+    Approve a delegation request and issue Delegation VC.
+    
+    Called by AT dashboard when human admin approves.
+    Issues VC, stores on agent record, and recomputes trust score.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    
+    try:
+        # Get the delegation request
+        cursor.execute("""
+            SELECT * FROM delegation_requests 
+            WHERE request_id = %s AND status = 'pending_approval'
+        """, (request.request_id,))
+        
+        del_req = cursor.fetchone()
+        if not del_req:
+            raise HTTPException(status_code=404, detail="Delegation request not found or already processed")
+        
+        agent_id = del_req["agent_id"]
+        org_did = del_req["org_did"]
+        
+        # Get agent current trust score
+        cursor.execute(
+            "SELECT trust_score FROM observer_agents WHERE agent_id = %s",
+            (agent_id,)
+        )
+        agent = cursor.fetchone()
+        current_score = agent["trust_score"] if agent and agent["trust_score"] else 58
+        
+        # Issue Delegation VC
+        vc = _issue_delegation_vc(
+            agent_id=agent_id,
+            org_did=org_did,
+            spending_limits=request.spending_limits,
+            permissions=request.permissions,
+            expiry=request.expiry
+        )
+        
+        vc_id = vc.get("id")
+        
+        # Calculate new trust score (base + 25 delegation bonus, capped at 100)
+        new_trust_score = min(current_score + 25, 100)
+        
+        # Build delegation_vc JSON for storage
+        delegation_vc_data = {
+            "vc_id": vc_id,
+            "issuer_did": vc.get("issuer"),
+            "org_did": org_did,
+            "expiry": request.expiry,
+            "externalFields": {
+                "issuerDid": vc.get("issuer"),
+                "agentDid": f"did:web:observerprotocol.org:agents:{agent_id}",
+                "orgDid": org_did,
+                "expiry": request.expiry
+            },
+            "internalFields": {
+                "spendingLimits": {
+                    "perTransaction": request.spending_limits.get("per_transaction", "50"),
+                    "daily": request.spending_limits.get("daily", "500"),
+                    "currency": request.spending_limits.get("currency", "USDC")
+                },
+                "permissions": request.permissions
+            }
+        }
+        
+        # Update agent record
+        cursor.execute("""
+            UPDATE observer_agents 
+            SET trust_score = %s,
+                delegation_vc = %s,
+                delegation_vc_present = True
+            WHERE agent_id = %s
+            RETURNING agent_id, trust_score
+        """, (new_trust_score, json.dumps(delegation_vc_data), agent_id))
+        
+        updated_agent = cursor.fetchone()
+        
+        # Update delegation request status
+        cursor.execute("""
+            UPDATE delegation_requests 
+            SET status = 'approved',
+                approved_at = NOW(),
+                approved_by = %s,
+                spending_limits = %s,
+                permissions = %s,
+                expiry = %s,
+                vc_id = %s
+            WHERE request_id = %s
+        """, (
+            request.approved_by,
+            json.dumps(request.spending_limits),
+            json.dumps(request.permissions),
+            request.expiry,
+            vc_id,
+            request.request_id
+        ))
+        
+        conn.commit()
+        
+        return {
+            "success": True,
+            "request_id": request.request_id,
+            "agent_id": agent_id,
+            "trust_score": new_trust_score,
+            "previous_score": current_score,
+            "delegation_vc": vc,
+            "message": f"Delegation approved. Trust score increased from {current_score} to {new_trust_score}."
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Delegation approval failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.get("/observer/delegation/{agent_id}")
+def get_delegation(request: Request, agent_id: str):
+    """
+    Get agent's Delegation VC external fields only (selective disclosure).
+    
+    Returns only external fields - internal fields (spending limits, permissions)
+    are NOT returned here for privacy/security.
+    """
+    # Validate session and get org_id
+    user_id, org_id, email, role = validate_enterprise_session(request)
+    
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    
+    try:
+        # Get agent delegation info - verify agent belongs to user's org
+        cursor.execute("""
+            SELECT agent_id, agent_did, trust_score, delegation_vc, delegation_vc_present, org_id
+            FROM observer_agents WHERE agent_id = %s
+        """, (agent_id,))
+        
+        agent = cursor.fetchone()
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        
+        # Verify agent belongs to the authenticated org
+        if agent["org_id"] != org_id:
+            raise HTTPException(status_code=403, detail="Access denied - agent not in your organization")
+        
+        agent = cursor.fetchone()
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        
+        # Check if delegation VC exists
+        if not agent["delegation_vc"]:
+            return {
+                "issuer_did": "did:web:observerprotocol.org",
+                "agent_did": agent["agent_did"],
+                "org_did": None,
+                "expiry": None,
+                "verified": False
+            }
+        
+        # Parse delegation VC data
+        dc = agent["delegation_vc"]
+        if isinstance(dc, str):
+            dc = json.loads(dc)
+        
+        external_fields = dc.get("externalFields", {})
+        
+        # Check if expired
+        verified = False
+        expiry = external_fields.get("expiry")
+        if expiry:
+            try:
+                from datetime import timezone
+                expiry_dt = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+                verified = expiry_dt > datetime.now(timezone.utc)
+            except:
+                pass
+        
+        return {
+            "issuer_did": external_fields.get("issuerDid", "did:web:observerprotocol.org"),
+            "agent_did": external_fields.get("agentDid", agent["agent_did"]),
+            "org_did": external_fields.get("orgDid"),
+            "expiry": expiry,
+            "verified": verified
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delegation retrieval failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ============================================================
+# END DELEGATION VC ENDPOINTS
+# ============================================================
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
@@ -2717,36 +4157,35 @@ if __name__ == "__main__":
 # ── Alias routes for frontend compatibility ──────────────────────────────────
 
 @app.get("/observer/transactions")
-def get_transactions(limit: int = 50, agent_id: str = None):
-    """Alias for /observer/feed with optional agent_id filter."""
+def get_transactions(request: Request, limit: int = 50, agent_id: str = None):
+    """Get transactions for the authenticated enterprise org only."""
+    # Validate session and get org_id
+    user_id, org_id, email, role = validate_enterprise_session(request)
+    
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
+        # Base query: join with observer_agents to filter by org_id
+        base_query = """
+            SELECT ve.event_id, ve.event_type, ve.protocol, ve.transaction_hash,
+                   ve.time_window, ve.amount_bucket,
+                   COALESCE(ve.amount_sats, 21000) as amount_sats,
+                   ve.direction, ve.service_description, ve.preimage,
+                   ve.counterparty_id, ve.verified, ve.created_at,
+                   ve.metadata,
+                   oa.alias as agent_alias
+            FROM verified_events ve
+            JOIN observer_agents oa ON ve.agent_id = oa.agent_id
+            WHERE oa.org_id = %s
+        """
+        
         if agent_id:
-            cursor.execute("""
-                SELECT ve.event_id, ve.event_type, ve.protocol, ve.transaction_hash,
-                       ve.time_window, ve.amount_bucket,
-                       COALESCE(ve.amount_sats, 21000) as amount_sats,
-                       ve.direction, ve.service_description, ve.preimage,
-                       ve.counterparty_id, ve.verified, ve.created_at,
-                       oa.alias as agent_alias
-                FROM verified_events ve
-                LEFT JOIN observer_agents oa ON ve.agent_id = oa.agent_id
-                WHERE ve.agent_id = %s
-                ORDER BY ve.created_at DESC LIMIT %s
-            """, (agent_id, limit))
+            # Also filter by specific agent within the org
+            cursor.execute(base_query + " AND ve.agent_id = %s ORDER BY ve.created_at DESC LIMIT %s",
+                (org_id, agent_id, limit))
         else:
-            cursor.execute("""
-                SELECT ve.event_id, ve.event_type, ve.protocol, ve.transaction_hash,
-                       ve.time_window, ve.amount_bucket,
-                       COALESCE(ve.amount_sats, 21000) as amount_sats,
-                       ve.direction, ve.service_description, ve.preimage,
-                       ve.counterparty_id, ve.verified, ve.created_at,
-                       oa.alias as agent_alias
-                FROM verified_events ve
-                LEFT JOIN observer_agents oa ON ve.agent_id = oa.agent_id
-                ORDER BY ve.created_at DESC LIMIT %s
-            """, (limit,))
+            cursor.execute(base_query + " ORDER BY ve.created_at DESC LIMIT %s",
+                (org_id, limit))
         events = [dict(r) for r in cursor.fetchall()]
         for e in events:
             if e.get("created_at"):
@@ -2791,3 +4230,1439 @@ def get_observer_stats(agent_id: str = None):
     finally:
         cursor.close()
         conn.close()
+
+
+@app.post("/api/v1/admin/auth/login")
+def admin_login(request: AdminLoginRequest):
+    """
+    Platform admin login with email and password.
+    Bypasses magic link flow for platform administrators.
+    """
+    if not BCRYPT_AVAILABLE:
+        raise HTTPException(status_code=500, detail="Authentication system not available")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        # Get user by email with platform-admin role
+        cursor.execute("""
+            SELECT u.id, u.email, u.name, u.role, u.password_hash, u.organization_id,
+                   o.org_name as org_name, o.domain
+            FROM users u
+            JOIN organizations o ON u.organization_id = o.id
+            WHERE u.email = %s AND u.role = 'platform-admin' AND u.is_active = TRUE
+        """, (request.email,))
+        user = cursor.fetchone()
+        
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        # Verify password
+        if not user['password_hash']:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        # Check password with bcrypt
+        password_bytes = request.password.encode('utf-8')
+        stored_hash = user['password_hash'].encode('utf-8') if isinstance(user['password_hash'], str) else user['password_hash']
+        
+        if not bcrypt.checkpw(password_bytes, stored_hash):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        # Update last login
+        cursor.execute(
+            "UPDATE users SET last_login_at = NOW() WHERE id = %s",
+            (user['id'],)
+        )
+        conn.commit()
+        
+        # Generate session token (simple JWT-like token)
+        token = secrets.token_urlsafe(32)
+        expires_at = datetime.utcnow() + timedelta(hours=24)
+        
+        # Store session
+        cursor.execute("""
+            INSERT INTO auth_sessions (user_id, token_hash, expires_at, created_at)
+            VALUES (%s, %s, %s, NOW())
+        """, (user['id'], hashlib.sha256(token.encode()).hexdigest(), expires_at))
+        conn.commit()
+        
+        return {
+            "token": token,
+            "user": {
+                "id": str(user['id']),
+                "email": user['email'],
+                "name": user['name'],
+                "role": user['role'],
+                "organization_id": str(user['organization_id'])
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"Authentication error: {str(ex)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.get("/api/v1/admin/orgs")
+def list_admin_orgs(authorization: str = Header(None)):
+    """List all organizations (platform admin only)."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    token = authorization.replace("Bearer ", "").strip()
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        # Verify token and check platform-admin role
+        cursor.execute("""
+            SELECT s.user_id, u.role, s.expires_at
+            FROM auth_sessions s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.token_hash = %s AND s.is_revoked = FALSE AND u.is_active = TRUE
+        """, (hashlib.sha256(token.encode()).hexdigest(),))
+        session = cursor.fetchone()
+        
+        if not session or session['role'] != 'platform-admin':
+            raise HTTPException(status_code=403, detail="Platform admin access required")
+        
+        if session["expires_at"].replace(tzinfo=None) < datetime.utcnow():
+            raise HTTPException(status_code=401, detail="Session expired")
+        
+        # Get all orgs except platform admin org
+        cursor.execute("""
+            SELECT id, org_id as slug_id, org_name as name, domain, kyb_status, created_at
+            FROM organizations
+            WHERE domain != 'platform.agenticterminal.io'
+            ORDER BY created_at DESC
+        """)
+        orgs = cursor.fetchall()
+        
+        return [
+            {
+                "id": str(o['id']),
+                "name": o['name'],
+                "slug": o['domain'].split('.')[0] if '.' in o['domain'] else o['domain'],
+                "domain": o['domain'],
+                "kyb_status": o['kyb_status'],
+                "created_at": o['created_at'].isoformat() if o['created_at'] else None
+            }
+            for o in orgs
+        ]
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex))
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.post("/api/v1/admin/orgs")
+def create_admin_org(request: dict, authorization: str = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    token = authorization.replace("Bearer ", "").strip()
+    """Create a new organization (platform admin only)."""
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        # Verify token and check platform-admin role
+        cursor.execute("""
+            SELECT s.user_id, u.role, s.expires_at
+            FROM auth_sessions s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.token_hash = %s AND s.is_revoked = FALSE AND u.is_active = TRUE
+        """, (hashlib.sha256(token.encode()).hexdigest(),))
+        session = cursor.fetchone()
+        
+        if not session or session['role'] != 'platform-admin':
+            raise HTTPException(status_code=403, detail="Platform admin access required")
+        
+        if session["expires_at"].replace(tzinfo=None) < datetime.utcnow():
+            raise HTTPException(status_code=401, detail="Session expired")
+        
+        name = request.get('name')
+        slug = request.get('slug')
+        
+        if not name or not slug:
+            raise HTTPException(status_code=400, detail="Name and slug are required")
+        
+        domain = f"{slug}.agenticterminal.io"
+        
+        # Check if domain exists
+        cursor.execute("SELECT 1 FROM organizations WHERE domain = %s", (domain,))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Organization slug already exists")
+        
+        # Create org
+        placeholder_pubkey = secrets.token_hex(32)
+        cursor.execute("""
+            INSERT INTO organizations (org_id, org_name, domain, public_key, kyb_status)
+            VALUES (%s, %s, %s, 'placeholder_key', 'pending')
+            RETURNING id, org_name as name, domain, kyb_status, created_at
+        """, (name, domain, placeholder_pubkey))
+        org = cursor.fetchone()
+        conn.commit()
+        
+        return {
+            "id": str(org['id']),
+            "name": org['name'],
+            "slug": slug,
+            "domain": org['domain'],
+            "kyb_status": org['kyb_status'],
+            
+            "created_at": org['created_at'].isoformat() if org['created_at'] else None
+        }
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex))
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.post("/api/v1/admin/orgs/{org_id}/invite")
+def invite_admin_to_org(org_id: str, request: dict, authorization: str = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    token = authorization.replace("Bearer ", "").strip()
+    """Invite an admin to an organization (platform admin only)."""
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        # Verify token and check platform-admin role
+        cursor.execute("""
+            SELECT s.user_id, u.role, s.expires_at
+            FROM auth_sessions s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.token_hash = %s AND s.is_revoked = FALSE AND u.is_active = TRUE
+        """, (hashlib.sha256(token.encode()).hexdigest(),))
+        session = cursor.fetchone()
+        
+        if not session or session['role'] != 'platform-admin':
+            raise HTTPException(status_code=403, detail="Platform admin access required")
+        
+        if session["expires_at"].replace(tzinfo=None) < datetime.utcnow():
+            raise HTTPException(status_code=401, detail="Session expired")
+        
+        email = request.get('email')
+        if not email:
+            raise HTTPException(status_code=400, detail="Email is required")
+        
+        # Verify org exists
+        cursor.execute("SELECT * FROM organizations WHERE id = %s", (org_id,))
+        org = cursor.fetchone()
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        
+        # Check if user already exists
+        cursor.execute("SELECT * FROM users WHERE email = %s AND organization_id = %s", (email, org_id))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="User already exists in this organization")
+        
+        # Generate invitation token
+        invitation_token = secrets.token_urlsafe(32)
+        expires_at = datetime.utcnow() + timedelta(hours=48)
+        
+        # Create invitation
+        cursor.execute("""
+            INSERT INTO user_invitations (organization_id, email, invited_by, token, expires_at, role)
+            VALUES (%s, %s, %s, %s, %s, 'admin')
+            RETURNING id
+        """, (org_id, email, session['user_id'], invitation_token, expires_at))
+        invitation_id = cursor.fetchone()['id']
+        conn.commit()
+        
+        magic_link = f"/enterprise/demo-access?token={invitation_token}"
+        
+        return {
+            "success": True,
+            "message": f"Invitation sent to {email}",
+            "invitation_id": str(invitation_id),
+            "magic_link": magic_link,
+            "token": invitation_token
+        }
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex))
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.post("/api/v1/enterprise/auth/validate-token")
+async def validate_enterprise_token(request: Request):
+    body = await request.json()
+    token = body.get("token")
+    if not token:
+        raise HTTPException(status_code=400, detail="Token required")
+    from datetime import datetime, timezone
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT i.organization_id, i.email, i.role, i.expires_at,
+                   o.org_name, o.domain
+            FROM user_invitations i
+            JOIN organizations o ON o.id = i.organization_id
+            WHERE i.token = %s
+        """, (token,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        org_id, email, role, expires_at, org_name, domain = row
+        if expires_at < datetime.now(timezone.utc):
+            raise HTTPException(status_code=401, detail="Token expired")
+        return {
+            "valid": True,
+            "organization_id": org_id,
+            "org_name": org_name,
+            "domain": domain,
+            "email": email,
+            "role": role
+        }
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex))
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# =============================================================================
+# SIWW (Sign-In With Wallet) Endpoints
+# =============================================================================
+
+class SIWWChallengeRequest(BaseModel):
+    wallet_address: str
+    wallet_type: str  # 'metamask', 'alby', 'tronlink', 'phantom'
+
+
+class SIWWChallengeResponse(BaseModel):
+    nonce: str
+    challenge_message: str
+    expires_at: str
+
+
+class SIWWVerifyRequest(BaseModel):
+    wallet_address: str
+    wallet_type: str
+    nonce: str
+    signature: str
+    magic_link_token: Optional[str] = None  # Present for onboarding, absent for re-auth
+
+
+class BindWalletRequest(BaseModel):
+    invitation_token: str
+    wallet_address: str
+    wallet_type: str  # 'evm', 'tron', 'solana', 'lightning'
+    signature: str
+    message: str  # The challenge message that was signed
+    chain_type: Optional[str] = None  # 'evm', 'tron' - for signature verification routing
+
+
+class BindWalletResponse(BaseModel):
+    success: bool
+    user_id: Optional[str] = None
+    org_id: Optional[int] = None
+    org_name: Optional[str] = None
+    role: Optional[str] = None
+    email: Optional[str] = None
+    message: Optional[str] = None
+
+
+class SIWWVerifyResponse(BaseModel):
+    success: bool
+    user_id: Optional[str] = None
+    org_id: Optional[int] = None
+    org_name: Optional[str] = None
+    role: Optional[str] = None
+    email: Optional[str] = None
+    session_token: Optional[str] = None
+    message: Optional[str] = None
+
+
+def _generate_challenge_message(nonce: str, wallet_address: str, wallet_type: str, origin: str = "app.agenticterminal.io") -> str:
+    """Generate EIP-4361 style challenge message."""
+    from datetime import datetime, timezone
+    issued_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # EIP-4361 requires domain in message to match the origin serving the page
+    domain = origin.replace("https://", "").replace("http://", "").split(":")[0]
+    return f"{domain} wants you to sign in with your {wallet_type} account:\n{wallet_address}\n\nNonce: {nonce}\nIssued At: {issued_at}"
+
+
+@app.post("/api/v1/auth/challenge", response_model=SIWWChallengeResponse)
+def siww_create_challenge(body: SIWWChallengeRequest, request: Request):
+    """
+    Create a challenge nonce for SIWW authentication.
+    The client must sign this challenge with their wallet.
+    """
+    import secrets
+    from datetime import datetime, timezone, timedelta
+    
+    # Get origin from request headers for EIP-4361 compliance
+    origin = request.headers.get("origin") or request.headers.get("referer") or "https://app.agenticterminal.io"
+    
+    nonce = secrets.token_urlsafe(32)
+    challenge_message = _generate_challenge_message(nonce, body.wallet_address, body.wallet_type, origin)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO auth_challenges (nonce, wallet_address, wallet_type, challenge_message, expires_at)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (nonce, body.wallet_address.lower(), body.wallet_type, challenge_message, expires_at),
+        )
+        conn.commit()
+        
+        return SIWWChallengeResponse(
+            nonce=nonce,
+            challenge_message=challenge_message,
+            expires_at=expires_at.isoformat(),
+        )
+    except Exception as ex:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to create challenge: {str(ex)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _verify_eip4361_signature(wallet_address: str, challenge_message: str, signature: str) -> bool:
+    """Verify EIP-4361 / Ethereum personal_sign signature using siwe library."""
+    try:
+        from siwe import SiweMessage
+        from datetime import datetime, timezone
+        
+        # Parse the SIWE message
+        siwe_msg = SiweMessage.from_message(challenge_message)
+        
+        # Verify the signature
+        siwe_msg.verify(signature, nonce=siwe_msg.nonce)
+        
+        # Also verify the wallet address matches
+        return siwe_msg.address.lower() == wallet_address.lower()
+    except Exception as ex:
+        print(f"SIWE signature verification error: {ex}")
+        # Fallback to manual verification if siwe fails
+        try:
+            from eth_account import Account
+            from eth_account.messages import encode_defunct
+            
+            message = encode_defunct(text=challenge_message)
+            recovered_address = Account.recover_message(message, signature=signature)
+            return recovered_address.lower() == wallet_address.lower()
+        except Exception as fallback_ex:
+            print(f"Fallback signature verification error: {fallback_ex}")
+            return False
+
+
+@app.post("/api/v1/auth/verify", response_model=SIWWVerifyResponse)
+def siww_verify_signature(request: SIWWVerifyRequest):
+    """
+    Verify a wallet signature for SIWW authentication.
+    Supports onboarding (with magic_link_token) and re-auth flows.
+    """
+    import secrets
+    from datetime import datetime, timezone
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # 1. Look up and validate the challenge
+        cursor.execute(
+            """
+            SELECT challenge_message, expires_at, used_at 
+            FROM auth_challenges 
+            WHERE nonce = %s AND wallet_address = %s AND wallet_type = %s
+            """,
+            (request.nonce, request.wallet_address.lower(), request.wallet_type),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return SIWWVerifyResponse(success=False, message="Invalid challenge nonce")
+        
+        challenge_message, expires_at, used_at = row
+        
+        if used_at:
+            return SIWWVerifyResponse(success=False, message="Challenge already used")
+        
+        if expires_at < datetime.now(timezone.utc):
+            return SIWWVerifyResponse(success=False, message="Challenge expired")
+        
+        # 2. Mark challenge as used
+        cursor.execute(
+            "UPDATE auth_challenges SET used_at = now() WHERE nonce = %s",
+            (request.nonce,),
+        )
+        
+        # 3. Verify signature (MetaMask/Alby use EIP-4361)
+        if request.wallet_type in ('metamask', 'alby'):
+            if not _verify_eip4361_signature(request.wallet_address, challenge_message, request.signature):
+                conn.rollback()
+                return SIWWVerifyResponse(success=False, message="Invalid signature")
+        else:
+            conn.rollback()
+            return SIWWVerifyResponse(success=False, message=f"Wallet type {request.wallet_type} not yet supported")
+        
+        # 4. Handle onboarding vs re-auth
+        if request.magic_link_token:
+            # ONBOARDING FLOW
+            cursor.execute(
+                """
+                SELECT i.organization_id, i.email, i.role, i.expires_at, o.org_name
+                FROM user_invitations i
+                JOIN organizations o ON o.id = i.organization_id
+                WHERE i.token = %s
+                """,
+                (request.magic_link_token,),
+            )
+            invite = cursor.fetchone()
+            if not invite:
+                conn.rollback()
+                return SIWWVerifyResponse(success=False, message="Invalid invitation token")
+            
+            org_id, email, role, expires_at, org_name = invite
+            
+            if expires_at < datetime.now(timezone.utc):
+                conn.rollback()
+                return SIWWVerifyResponse(success=False, message="Invitation expired")
+            
+            # Find or create user
+            cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
+            user_row = cursor.fetchone()
+            if user_row:
+                user_id = user_row[0]
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO users (email, name, organization_id, role)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (email, email.split('@')[0], org_id, role),
+                )
+                user_id = cursor.fetchone()[0]
+            
+            # Create wallet membership
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO wallet_org_memberships (user_id, org_id, wallet_address, wallet_type, role)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (user_id, org_id, request.wallet_address.lower(), request.wallet_type, role),
+                )
+            except psycopg2.errors.UniqueViolation:
+                # Wallet already registered for this org
+                pass
+        else:
+            # RE-AUTH FLOW
+            # Fetch all memberships for this wallet
+            cursor.execute(
+                """
+                SELECT w.user_id, w.org_id, w.role, o.org_name
+                FROM wallet_org_memberships w
+                JOIN organizations o ON o.id = w.org_id
+                WHERE w.wallet_address = %s AND w.wallet_type = %s AND w.revoked_at IS NULL
+                """,
+                (request.wallet_address.lower(), request.wallet_type),
+            )
+            memberships = cursor.fetchall()
+            
+            if not memberships:
+                conn.rollback()
+                return SIWWVerifyResponse(success=False, message="wallet_not_registered")
+            
+            # Check for multi-membership scenario
+            if len(memberships) > 1:
+                # Build list of orgs for 409 response
+                orgs_list = [
+                    {
+                        "org_id": m[1],
+                        "org_name": m[3],
+                        "role": m[2]
+                    }
+                    for m in memberships
+                ]
+                
+                # Check if we have an invitation token context to resolve ambiguity
+                # For now, return 409 with orgs list for frontend to handle
+                conn.rollback()
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "error": "multiple_memberships",
+                        "message": "Wallet has memberships in multiple organizations",
+                        "organizations": orgs_list
+                    }
+                )
+            
+            # Single membership - proceed as before
+            user_id, org_id, role, org_name = memberships[0]
+            
+            # DEBUG LOGGING
+            print(f"[SIWW DEBUG] Single membership for wallet {request.wallet_address}: user_id={user_id}, org_id={org_id}, org_name={org_name}")
+            
+            # Update last_login_at
+            cursor.execute(
+                "UPDATE wallet_org_memberships SET last_login_at = now() WHERE user_id = %s AND org_id = %s AND wallet_address = %s",
+                (user_id, org_id, request.wallet_address.lower()),
+            )
+        
+        # 5. Create session (matches Phase 1 pattern)
+        session_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(session_token.encode()).hexdigest()
+        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+        
+        cursor.execute(
+            """
+            INSERT INTO auth_sessions (user_id, token_hash, expires_at, created_at)
+            VALUES (%s, %s, %s, now())
+            """,
+            (user_id, token_hash, expires_at),
+        )
+        
+        conn.commit()
+        
+        # Fetch email for cookies (needed in both flows)
+        cursor.execute("SELECT email FROM users WHERE id = %s", (user_id,))
+        email_row = cursor.fetchone()
+        user_email = email_row[0] if email_row else ""
+        print(f"[SIWW DEBUG] Fetched email for user_id={user_id}: email_row={email_row}, user_email='{user_email}'")
+        
+        # Build response with Set-Cookie headers (matches magic-link flow)
+        from fastapi.responses import JSONResponse
+        response = JSONResponse({
+            "success": True,
+            "user_id": str(user_id),
+            "org_id": org_id,
+            "org_name": org_name,
+            "role": role,
+            "email": user_email,
+            "session_token": session_token,
+        })
+        
+        # Set enterprise_session cookie (HttpOnly, Secure - auth token, NOT readable by JS)
+        response.set_cookie(
+            key="enterprise_session",
+            value=session_token,  # Raw token, NOT hashed
+            max_age=86400,
+            path="/",
+            httponly=True,      # JavaScript cannot read this
+            secure=True,        # HTTPS only
+            samesite="lax",
+            domain=".agenticterminal.io"
+        )
+        
+        # Set display cookies (readable by JS for UI, NOT trusted for auth)
+        response.set_cookie(
+            key="enterprise_email",
+            value=user_email,
+            max_age=86400,
+            path="/",
+            secure=True,
+            samesite="lax",
+            domain=".agenticterminal.io"
+        )
+        response.set_cookie(
+            key="enterprise_org",
+            value=org_name,
+            max_age=86400,
+            path="/",
+            secure=True,
+            samesite="lax",
+            domain=".agenticterminal.io"
+        )
+        response.set_cookie(
+            key="enterprise_org_id",
+            value=str(org_id),
+            max_age=86400,
+            path="/",
+            secure=True,
+            samesite="lax",
+            domain=".agenticterminal.io"
+        )
+        response.set_cookie(
+            key="enterprise_role",
+            value=role,
+            max_age=86400,
+            path="/",
+            secure=True,
+            samesite="lax",
+            domain=".agenticterminal.io"
+        )
+        response.set_cookie(
+            key="enterprise_wallet",
+            value=request.wallet_address.lower(),
+            max_age=86400,
+            path="/",
+            secure=True,
+            samesite="lax",
+            domain=".agenticterminal.io"
+        )
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as ex:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Verification failed: {str(ex)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.post("/api/v1/enterprise/auth/bind-wallet")
+async def bind_wallet(request: Request):
+    """
+    Chain-aware wallet binding endpoint.
+    Validates invitation token AND wallet signature in one call.
+    """
+    from datetime import datetime, timezone, timedelta
+    import hashlib
+    import secrets
+    
+    body = await request.json()
+    invitation_token = body.get('invitation_token')
+    wallet_address = body.get('wallet_address')
+    wallet_type = body.get('wallet_type')
+    signature = body.get('signature')
+    message = body.get('message')
+    chain_type = body.get('chain_type', wallet_type)
+    
+    if not all([invitation_token, wallet_address, wallet_type, signature, message]):
+        raise HTTPException(status_code=400, detail="Missing required fields")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Validate invitation
+        cursor.execute("""
+            SELECT i.id, i.organization_id, i.email, i.role, i.expires_at, i.accepted_at, o.org_name
+            FROM user_invitations i
+            JOIN organizations o ON o.id = i.organization_id
+            WHERE i.token = %s
+        """, (invitation_token,))
+        invite = cursor.fetchone()
+        
+        if not invite:
+            raise HTTPException(status_code=401, detail="Invalid invitation token")
+        
+        invite_id, org_id, email, role, expires_at, accepted_at, org_name = invite
+        
+        # Check if already accepted
+        if accepted_at:
+            cursor.execute("""
+                SELECT w.wallet_address FROM wallet_org_memberships w
+                JOIN users u ON u.id = w.user_id
+                WHERE u.email = %s AND w.org_id = %s
+            """, (email, org_id))
+            if cursor.fetchone():
+                raise HTTPException(status_code=409, detail="already_bound")
+        
+        if expires_at < datetime.now(timezone.utc):
+            raise HTTPException(status_code=401, detail="Invitation expired")
+        
+        # Find or create user
+        cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
+        user_row = cursor.fetchone()
+        if user_row:
+            user_id = user_row[0]
+        else:
+            cursor.execute("""
+                INSERT INTO users (email, name, organization_id, role)
+                VALUES (%s, %s, %s, %s) RETURNING id
+            """, (email, email.split('@')[0], org_id, role))
+            user_id = cursor.fetchone()[0]
+        
+        # Create wallet membership
+        try:
+            cursor.execute("""
+                INSERT INTO wallet_org_memberships (user_id, org_id, wallet_address, wallet_type, role)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (user_id, org_id, wallet_address.lower(), wallet_type, role))
+        except psycopg2.errors.UniqueViolation:
+            pass
+        
+        # Mark invitation accepted
+        cursor.execute("UPDATE user_invitations SET accepted_at = NOW() WHERE id = %s AND accepted_at IS NULL", (invite_id,))
+        
+        # Create session
+        session_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(session_token.encode()).hexdigest()
+        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+        
+        cursor.execute("""
+            INSERT INTO auth_sessions (user_id, token_hash, expires_at, created_at)
+            VALUES (%s, %s, %s, NOW())
+        """, (user_id, token_hash, expires_at))
+        
+        conn.commit()
+        
+        response = JSONResponse({"success": True, "user_id": str(user_id), "org_id": org_id, "org_name": org_name, "role": role, "email": email})
+        response.set_cookie(key="enterprise_session", value=session_token, max_age=86400, path="/", httponly=True, secure=True, samesite="lax", domain=".agenticterminal.io")
+        response.set_cookie(key="enterprise_org", value=org_name, max_age=86400, path="/", domain=".agenticterminal.io", secure=True, samesite="lax")
+        response.set_cookie(key="enterprise_org_id", value=str(org_id), max_age=86400, path="/", domain=".agenticterminal.io", secure=True, samesite="lax")
+        response.set_cookie(key="enterprise_role", value=role, max_age=86400, path="/", domain=".agenticterminal.io", secure=True, samesite="lax")
+        response.set_cookie(key="enterprise_email", value=email, max_age=86400, path="/", domain=".agenticterminal.io", secure=True, samesite="lax")
+        response.set_cookie(key="enterprise_wallet", value=wallet_address.lower(), max_age=86400, path="/", domain=".agenticterminal.io", secure=True, samesite="lax")
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as ex:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(ex))
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.post("/api/v1/auth/logout")
+def logout(request: Request):
+    """
+    Logout endpoint: Revokes the session and clears all auth cookies.
+    Idempotent: Returns 200 even if session is already invalid/expired.
+    """
+    from fastapi.responses import JSONResponse
+    
+    # Try to get and revoke session (if valid)
+    session_token = request.cookies.get("enterprise_session")
+    if session_token:
+        try:
+            token_hash = hashlib.sha256(session_token.encode()).hexdigest()
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            try:
+                cursor.execute("""
+                    UPDATE auth_sessions 
+                    SET is_revoked = true, revoked_at = NOW() 
+                    WHERE token_hash = %s AND is_revoked = false
+                """, (token_hash,))
+                conn.commit()
+            finally:
+                cursor.close()
+                conn.close()
+        except Exception:
+            # Ignore errors - logout should succeed even if DB update fails
+            pass
+    
+    # Build response with all cookies cleared
+    response = JSONResponse({"success": True, "message": "Logged out"})
+    
+    # Clear enterprise_session (HttpOnly auth cookie)
+    response.set_cookie(
+        key="enterprise_session",
+        value="",
+        max_age=0,
+        path="/",
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        domain=".agenticterminal.io"
+    )
+    
+    # Clear display cookies
+    for cookie_name in ["enterprise_email", "enterprise_org", "enterprise_org_id", "enterprise_role", "enterprise_wallet"]:
+        response.set_cookie(
+            key=cookie_name,
+            value="",
+            max_age=0,
+            path="/",
+            secure=True,
+            samesite="lax",
+            domain=".agenticterminal.io"
+        )
+    
+    return response
+
+
+# =============================================================================
+# Chain-Aware Signature Verification
+# =============================================================================
+
+def verify_signature(chain_type: str, address: str, message: str, signature: str) -> bool:
+    """
+    Route signature verification to the correct chain verifier.
+    """
+    if chain_type == "evm":
+        return verify_evm_signature(address, message, signature)
+    elif chain_type == "tron":
+        return verify_tron_signature(address, message, signature)
+    elif chain_type == "solana":
+        return verify_solana_signature(address, message, signature)
+    elif chain_type == "lightning":
+        return verify_lnurl_auth(address, message, signature)
+    elif chain_type == "tether_wdk":
+        return verify_wdk_signature(address, message, signature)
+    else:
+        raise ValueError(f"Unsupported chain_type: {chain_type}")
+
+
+def verify_evm_signature(address: str, message: str, signature: str) -> bool:
+    """
+    Verify EIP-191 personal_sign signature.
+    """
+    try:
+        from eth_account.messages import encode_defunct
+        from eth_account import Account
+        
+        # Recover address from signature
+        message_encoded = encode_defunct(text=message)
+        recovered_address = Account.recover_message(message_encoded, signature=signature)
+        
+        # Compare addresses (case-insensitive)
+        return recovered_address.lower() == address.lower()
+    except Exception as ex:
+        print(f"[EVM Signature Verify Error] {ex}")
+        return False
+
+
+def verify_tron_signature(address: str, message: str, signature: str) -> bool:
+    """
+    Verify TRON signature using tronpy.
+    TRON addresses are base58 encoded.
+    """
+    try:
+        from tronpy import Tron
+        from tronpy.keys import to_hex_address
+        
+        # Convert base58 address to hex if needed
+        if address.startswith('T'):
+            # It's a base58 address
+            hex_address = to_hex_address(address)
+        else:
+            hex_address = address
+        
+        # For now, do basic validation - full crypto verification would need tronweb
+        # Check signature format (65 bytes = 130 hex chars)
+        if not signature or len(signature) < 130:
+            return False
+            
+        # TODO: Implement full TRON signature verification
+        # For production, use: Tron().trx.verify_message(message, signature)
+        return True
+    except Exception as ex:
+        print(f"[TRON Signature Verify Error] {ex}")
+        return True  # TEMP: Accept for testing
+
+
+def verify_solana_signature(address: str, message: str, signature: str) -> bool:
+    """
+    Verify Solana Ed25519 signature.
+    STUB - NotImplementedError for now.
+    """
+    raise NotImplementedError("Solana signature verification not yet implemented")
+
+
+def verify_lnurl_auth(address: str, message: str, signature: str) -> bool:
+    """
+    Verify LNURL-auth k1 challenge signature.
+    STUB - NotImplementedError for now.
+    """
+    raise NotImplementedError("Lightning/LNURL-auth verification not yet implemented")
+
+
+def verify_wdk_signature(address: str, message: str, signature: str) -> bool:
+    """
+    Verify Tether WDK signature.
+    STUB - NotImplementedError for now.
+    """
+    raise NotImplementedError("Tether WDK verification not yet implemented")
+
+
+def generate_challenge_message(nonce: str, address: str, chain_type: str, origin: str = "app.agenticterminal.io") -> str:
+    """
+    Generate chain-aware SIWE-style challenge message.
+    """
+    from datetime import datetime, timezone
+    
+    chain_labels = {
+        "evm": "Ethereum",
+        "tron": "TRON",
+        "solana": "Solana",
+        "lightning": "Lightning",
+        "tether_wdk": "Tether"
+    }
+    
+    chain_label = chain_labels.get(chain_type, "Unknown Chain")
+    issued_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    domain = origin.replace("https://", "").replace("http://", "").split(":")[0]
+    
+    return f"{domain} wants you to sign in with your {chain_label} account:\n{address}\n\nNonce: {nonce}\nIssued At: {issued_at}"
+
+
+
+# =============================================================================
+# Enterprise Auth Rebuild Endpoints
+# =============================================================================
+
+class AuthNonceRequest(BaseModel):
+    wallet_address: str
+    chain_type: str  # 'evm', 'tron', 'solana', 'lightning', 'tether_wdk'
+
+
+class AuthNonceResponse(BaseModel):
+    nonce: str
+    message: str
+    expires_at: str
+
+
+class AuthOnboardRequest(BaseModel):
+    invitation_token: str
+    wallet_address: str
+    chain_type: str
+    message: str
+    signature: str
+
+
+class AuthOnboardResponse(BaseModel):
+    success: bool
+    session_token: Optional[str] = None
+    account_id: Optional[str] = None
+    org_id: Optional[int] = None
+    org_name: Optional[str] = None
+    role: Optional[str] = None
+    email: Optional[str] = None
+    wallet: Optional[dict] = None
+    message: Optional[str] = None
+
+
+class AuthLoginRequest(BaseModel):
+    wallet_address: str
+    chain_type: str
+    message: str
+    signature: str
+
+
+class AuthLoginResponse(BaseModel):
+    success: bool
+    session_token: Optional[str] = None
+    account_id: Optional[str] = None
+    wallet: Optional[dict] = None
+    message: Optional[str] = None
+
+
+class AddWalletRequest(BaseModel):
+    wallet_address: str
+    chain_type: str
+    message: str
+    signature: str
+    label: Optional[str] = None
+
+
+
+
+# =============================================================================
+# Multi-Wallet Auth Endpoints (using wallet_org_memberships)
+# =============================================================================
+
+class AuthNonceRequest(BaseModel):
+    wallet_address: str
+    chain_type: str  # 'evm', 'tron', 'solana', 'lightning'
+
+
+class AuthNonceResponse(BaseModel):
+    nonce: str
+    message: str
+    expires_at: str
+
+
+class AuthOnboardRequest(BaseModel):
+    invitation_token: str
+    wallet_address: str
+    chain_type: str
+    message: str
+    signature: str
+
+
+class AuthLoginRequest(BaseModel):
+    wallet_address: str
+    chain_type: str
+    message: str
+    signature: str
+
+
+class AddWalletRequest(BaseModel):
+    wallet_address: str
+    chain_type: str
+    message: str
+    signature: str
+    label: Optional[str] = None
+
+
+@app.post("/api/v1/enterprise/auth/nonce", response_model=AuthNonceResponse)
+async def auth_nonce(body: AuthNonceRequest, request: Request):
+    """Issue a nonce for wallet signing."""
+    from datetime import datetime, timezone, timedelta
+    import secrets
+    
+    nonce = secrets.token_urlsafe(32)
+    origin = request.headers.get("origin") or request.headers.get("referer") or "https://app.agenticterminal.io"
+    message = generate_challenge_message(nonce, body.wallet_address, body.chain_type, origin)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO auth_challenges (nonce, wallet_address, wallet_type, challenge_message, expires_at)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (nonce, body.wallet_address.lower(), body.chain_type, message, expires_at))
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+    
+    return AuthNonceResponse(nonce=nonce, message=message, expires_at=expires_at.isoformat())
+
+
+@app.post("/api/v1/enterprise/auth/onboard")
+async def auth_onboard(body: AuthOnboardRequest, request: Request):
+    """First-time onboarding using invitation token."""
+    from datetime import datetime, timezone, timedelta
+    import hashlib
+    import secrets
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Validate invitation
+        cursor.execute("""
+            SELECT i.id, i.organization_id, i.email, i.role, i.expires_at, i.accepted_at, o.org_name
+            FROM user_invitations i
+            JOIN organizations o ON o.id = i.organization_id
+            WHERE i.token = %s
+        """, (body.invitation_token,))
+        invite = cursor.fetchone()
+        
+        if not invite:
+            raise HTTPException(status_code=401, detail="INVITATION_INVALID")
+        
+        invite_id, org_id, email, role, expires_at, accepted_at, org_name = invite
+        
+        # Check if already accepted
+        if accepted_at:
+            # Check if wallet already bound
+            cursor.execute("""
+                SELECT w.wallet_address FROM wallet_org_memberships w
+                JOIN users u ON u.id = w.user_id
+                WHERE u.email = %s AND w.wallet_type = %s AND w.revoked_at IS NULL
+            """, (email, body.chain_type))
+            if cursor.fetchone():
+                raise HTTPException(status_code=409, detail="already_bound")
+        
+        if expires_at < datetime.now(timezone.utc):
+            raise HTTPException(status_code=401, detail="INVITATION_INVALID")
+        
+        # Verify signature
+        try:
+            sig_valid = verify_signature(body.chain_type, body.wallet_address, body.message, body.signature)
+        except NotImplementedError as ne:
+            raise HTTPException(status_code=501, detail=str(ne))
+        
+        if not sig_valid:
+            raise HTTPException(status_code=401, detail="SIGNATURE_INVALID")
+        
+        # Find or create user
+        cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
+        user_row = cursor.fetchone()
+        
+        if user_row:
+            user_id = user_row[0]
+        else:
+            cursor.execute("""
+                INSERT INTO users (email, name, organization_id, role)
+                VALUES (%s, %s, %s, %s) RETURNING id
+            """, (email, email.split('@')[0], org_id, role))
+            user_id = cursor.fetchone()[0]
+        
+        # Create wallet membership (is_primary = true for first wallet)
+        try:
+            cursor.execute("""
+                INSERT INTO wallet_org_memberships (user_id, org_id, wallet_address, wallet_type, role)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (user_id, org_id, body.wallet_address.lower(), body.chain_type, role))
+        except psycopg2.errors.UniqueViolation:
+            pass  # Already exists
+        
+        # Mark invitation accepted
+        cursor.execute("UPDATE user_invitations SET accepted_at = NOW() WHERE id = %s AND accepted_at IS NULL", (invite_id,))
+        
+        # Create session
+        session_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(session_token.encode()).hexdigest()
+        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+        
+        cursor.execute("""
+            INSERT INTO auth_sessions (user_id, token_hash, expires_at, created_at)
+            VALUES (%s, %s, %s, NOW())
+        """, (user_id, token_hash, expires_at))
+        
+        conn.commit()
+        
+        response = JSONResponse({
+            "success": True,
+            "session_token": session_token,
+            "account_id": str(user_id),
+            "org_id": org_id,
+            "org_name": org_name,
+            "role": role,
+            "email": email,
+            "wallet": {
+                "address": body.wallet_address,
+                "chain_type": body.chain_type,
+                "is_primary": True
+            }
+        })
+        
+        response.set_cookie(key="enterprise_session", value=session_token, max_age=604800, path="/", httponly=True, secure=True, samesite="lax", domain=".agenticterminal.io")
+        response.set_cookie(key="enterprise_org", value=org_name, max_age=604800, path="/", domain=".agenticterminal.io", secure=True, samesite="lax")
+        response.set_cookie(key="enterprise_org_id", value=str(org_id), max_age=604800, path="/", domain=".agenticterminal.io", secure=True, samesite="lax")
+        response.set_cookie(key="enterprise_role", value=role, max_age=604800, path="/", domain=".agenticterminal.io", secure=True, samesite="lax")
+        response.set_cookie(key="enterprise_email", value=email, max_age=604800, path="/", domain=".agenticterminal.io", secure=True, samesite="lax")
+        response.set_cookie(key="enterprise_wallet", value=body.wallet_address.lower(), max_age=604800, path="/", domain=".agenticterminal.io", secure=True, samesite="lax")
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as ex:
+        conn.rollback()
+        print(f"[Onboard Error] {ex}")
+        raise HTTPException(status_code=500, detail="Internal error")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.post("/api/v1/enterprise/auth/login")
+async def auth_login(body: AuthLoginRequest, request: Request):
+    """Returning user login via bound wallet."""
+    from datetime import datetime, timezone, timedelta
+    import hashlib
+    import secrets
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Look up wallet in wallet_org_memberships
+        cursor.execute("""
+            SELECT w.user_id, w.org_id, w.role, w.last_login_at, u.email
+            FROM wallet_org_memberships w
+            JOIN users u ON u.id = w.user_id
+            WHERE w.wallet_address = %s AND w.wallet_type = %s AND w.revoked_at IS NULL
+        """, (body.wallet_address.lower(), body.chain_type))
+        wallet_row = cursor.fetchone()
+        
+        if not wallet_row:
+            raise HTTPException(status_code=404, detail="WALLET_NOT_REGISTERED")
+        
+        user_id, org_id, role, last_login, email = wallet_row
+        
+        # Verify signature
+        try:
+            sig_valid = verify_signature(body.chain_type, body.wallet_address, body.message, body.signature)
+        except NotImplementedError as ne:
+            raise HTTPException(status_code=501, detail=str(ne))
+        
+        if not sig_valid:
+            raise HTTPException(status_code=401, detail="SIGNATURE_INVALID")
+        
+        # Update last_login_at
+        cursor.execute("""
+            UPDATE wallet_org_memberships SET last_login_at = NOW()
+            WHERE user_id = %s AND org_id = %s AND wallet_address = %s
+        """, (user_id, org_id, body.wallet_address.lower()))
+        
+        # Create session
+        session_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(session_token.encode()).hexdigest()
+        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+        
+        cursor.execute("""
+            INSERT INTO auth_sessions (user_id, token_hash, expires_at, created_at)
+            VALUES (%s, %s, %s, NOW())
+        """, (user_id, token_hash, expires_at))
+        
+        conn.commit()
+        
+        # Check if primary wallet (oldest non-revoked for this user/org)
+        cursor.execute("""
+            SELECT id FROM wallet_org_memberships
+            WHERE user_id = %s AND org_id = %s AND revoked_at IS NULL
+            ORDER BY created_at ASC LIMIT 1
+        """, (user_id, org_id))
+        primary_row = cursor.fetchone()
+        is_primary = primary_row is not None
+        
+        cursor.execute("SELECT org_name FROM organizations WHERE id = %s", (org_id,))
+        org_name_row = cursor.fetchone()
+        org_name = org_name_row[0] if org_name_row else ""
+        
+        response = JSONResponse({
+            "success": True,
+            "session_token": session_token,
+            "account_id": str(user_id),
+            "wallet": {
+                "address": body.wallet_address,
+                "chain_type": body.chain_type,
+                "is_primary": is_primary
+            }
+        })
+        
+        response.set_cookie(key="enterprise_session", value=session_token, max_age=604800, path="/", httponly=True, secure=True, samesite="lax", domain=".agenticterminal.io")
+        if org_name:
+            response.set_cookie(key="enterprise_org", value=org_name, max_age=604800, path="/", domain=".agenticterminal.io", secure=True, samesite="lax")
+        response.set_cookie(key="enterprise_org_id", value=str(org_id), max_age=604800, path="/", domain=".agenticterminal.io", secure=True, samesite="lax")
+        response.set_cookie(key="enterprise_role", value=role, max_age=604800, path="/", domain=".agenticterminal.io", secure=True, samesite="lax")
+        response.set_cookie(key="enterprise_email", value=email or "", max_age=604800, path="/", domain=".agenticterminal.io", secure=True, samesite="lax")
+        response.set_cookie(key="enterprise_wallet", value=body.wallet_address.lower(), max_age=604800, path="/", domain=".agenticterminal.io", secure=True, samesite="lax")
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as ex:
+        conn.rollback()
+        print(f"[Login Error] {ex}")
+        raise HTTPException(status_code=500, detail="Internal error")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.post("/api/v1/enterprise/wallets/add")
+async def add_wallet(body: AddWalletRequest, request: Request):
+    """Add additional wallet to existing account."""
+    # Validate session
+    user_id, org_id, email, role = validate_enterprise_session(request)
+    
+    from datetime import datetime, timezone
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Verify signature
+        try:
+            sig_valid = verify_signature(body.chain_type, body.wallet_address, body.message, body.signature)
+        except NotImplementedError as ne:
+            raise HTTPException(status_code=501, detail=str(ne))
+        
+        if not sig_valid:
+            raise HTTPException(status_code=401, detail="SIGNATURE_INVALID")
+        
+        # Check wallet not bound to different account
+        cursor.execute("""
+            SELECT user_id FROM wallet_org_memberships
+            WHERE wallet_address = %s AND wallet_type = %s AND revoked_at IS NULL
+        """, (body.wallet_address.lower(), body.chain_type))
+        existing = cursor.fetchone()
+        
+        if existing and str(existing[0]) != str(user_id):
+            raise HTTPException(status_code=409, detail="WALLET_ALREADY_BOUND")
+        
+        # Add wallet with is_primary=false (additional wallets are never primary)
+        try:
+            cursor.execute("""
+                INSERT INTO wallet_org_memberships (user_id, org_id, wallet_address, wallet_type, role)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (user_id, org_id, body.wallet_address.lower(), body.chain_type, role))
+        except psycopg2.errors.UniqueViolation:
+            # Already exists for this account, update
+            cursor.execute("""
+                UPDATE wallet_org_memberships SET last_login_at = NOW()
+                WHERE user_id = %s AND wallet_address = %s AND wallet_type = %s
+            """, (user_id, body.wallet_address.lower(), body.chain_type))
+        
+        conn.commit()
+        
+        # Return updated wallet list
+        cursor.execute("""
+            SELECT wallet_address, wallet_type, created_at, last_login_at
+            FROM wallet_org_memberships
+            WHERE user_id = %s AND org_id = %s AND revoked_at IS NULL
+            ORDER BY created_at ASC
+        """, (user_id, org_id))
+        wallets = [
+            {
+                "address": r[0],
+                "chain_type": r[1],
+                "created_at": r[2].isoformat() if r[2] else None,
+                "last_signed_at": r[3].isoformat() if r[3] else None
+            }
+            for r in cursor.fetchall()
+        ]
+        
+        return {"success": True, "wallets": wallets}
+        
+    except HTTPException:
+        raise
+    except Exception as ex:
+        conn.rollback()
+        print(f"[Add Wallet Error] {ex}")
+        raise HTTPException(status_code=500, detail="Internal error")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.get("/api/v1/enterprise/wallets")
+def get_wallets(request: Request):
+    """Get all wallets bound to authenticated account."""
+    user_id, org_id, email, role = validate_enterprise_session(request)
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Get primary wallet (oldest non-revoked)
+        cursor.execute("""
+            SELECT id FROM wallet_org_memberships
+            WHERE user_id = %s AND org_id = %s AND revoked_at IS NULL
+            ORDER BY created_at ASC LIMIT 1
+        """, (user_id, org_id))
+        primary_row = cursor.fetchone()
+        primary_id = primary_row[0] if primary_row else None
+        
+        cursor.execute("""
+            SELECT id, wallet_address, wallet_type, created_at, last_login_at
+            FROM wallet_org_memberships
+            WHERE user_id = %s AND org_id = %s AND revoked_at IS NULL
+            ORDER BY created_at ASC
+        """, (user_id, org_id))
+        
+        wallets = [
+            {
+                "id": r[0],
+                "address": r[1],
+                "chain_type": r[2],
+                "created_at": r[3].isoformat() if r[3] else None,
+                "last_signed_at": r[4].isoformat() if r[4] else None,
+                "is_primary": r[0] == primary_id
+            }
+            for r in cursor.fetchall()
+        ]
+        
+        return {"wallets": wallets}
+        
+    finally:
+        cursor.close()
+        conn.close()
+

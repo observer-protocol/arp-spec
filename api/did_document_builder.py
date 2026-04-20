@@ -60,13 +60,13 @@ def decode_multibase_to_bytes(multibase_key: str) -> bytes:
 
 
 def build_agent_did(agent_id: str, domain: str = OP_BASE_DOMAIN) -> str:
-    """Return the canonical DID string for an agent."""
+    """Return the canonical DID string for an agent using fragment format."""
     return f"did:web:{domain}:agents:{agent_id}"
 
 
 def build_org_did(org_id: str, domain: str = OP_BASE_DOMAIN) -> str:
-    """Return the canonical DID string for an organization."""
-    return f"did:web:{domain}:orgs:{org_id}"
+    """Return the canonical DID string for an organization using fragment format."""
+    return f"did:web:{domain}#{org_id}"
 
 
 def build_op_did(domain: str = OP_BASE_DOMAIN) -> str:
