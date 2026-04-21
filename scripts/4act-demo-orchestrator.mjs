@@ -16,16 +16,16 @@ import { randomUUID } from 'crypto';
 
 // Configuration
 const CONFIG = {
-  OP_API_BASE: process.env.OP_API_URL || 'https://api.observerprotocol.org',
-  OP_API_V1: process.env.OP_API_V1_URL || 'https://api.observerprotocol.org/api/v1',
+  OP_API_BASE: process.env.OP_API_URL || 'http://127.0.0.1:8000',
+  OP_API_V1: process.env.OP_API_V1_URL || 'http://127.0.0.1:8000/api/v1',
   AT_DASHBOARD_URL: process.env.AT_DASHBOARD_URL || 'https://agenticterminal.com/enterprise/transactions',
   TRON_NETWORK: process.env.TRON_NETWORK || 'mainnet',
   TRONGRID_API_KEY: process.env.TRONGRID_API_KEY || '',
-  MAIN_AGENT_ID: process.env.MAIN_AGENT_ID || 'maxi-demo-agent-01',
-  MAIN_AGENT_DID: process.env.MAIN_AGENT_DID || 'did:web:api.observerprotocol.org:agents:tron-foundation:maxi-demo-agent-01',
-  SETTLEMENT_AGENT_ID: process.env.SETTLEMENT_AGENT_ID || 'rwa-settlement-agent-01',
-  SETTLEMENT_AGENT_DID: process.env.SETTLEMENT_AGENT_DID || 'did:web:api.observerprotocol.org:agents:arcadia-labs:rwa-settlement-agent-01',
-  SETTLEMENT_TRON_ADDRESS: process.env.SETTLEMENT_TRON_ADDRESS || 'TQYv2pqr2xL4bzsT5x7r6qH6Y8vZ9aBcDeF',
+  MAIN_AGENT_ID: process.env.MAIN_AGENT_ID || 'd13cdfceaa8f895afe56dc902179d279',
+  MAIN_AGENT_DID: process.env.MAIN_AGENT_DID || 'did:web:observerprotocol.org:agents:d13cdfceaa8f895afe56dc902179d279',
+  SETTLEMENT_AGENT_ID: process.env.SETTLEMENT_AGENT_ID || 'rwa-settlement-demo-agent',
+  SETTLEMENT_AGENT_DID: process.env.SETTLEMENT_AGENT_DID || 'did:web:observerprotocol.org:agents:rwa-settlement-demo-agent',
+  SETTLEMENT_TRON_ADDRESS: process.env.SETTLEMENT_TRON_ADDRESS || 'TW6usPjgS1p3SNqqad6FgSCu1fEeTD4My3',
   DEMO_AMOUNT_USDT: parseFloat(process.env.DEMO_AMOUNT_USDT || '1.00'),
   AUTO_MODE: process.env.AUTO_MODE === 'true',
   SKIP_LIVE_TX: process.env.SKIP_LIVE_TX === 'true',
@@ -90,7 +90,7 @@ const demoState = {
 async function act1AgentIdentity() {
   printHeader('AGENT IDENTITY', 1);
   console.log('\n  Narrative: "This is Maxi, OP-registered with W3C DID/VC infrastructure"');
-  const client = new OPApiClient(CONFIG.OP_API_V1);
+  const client = new OPApiClient(CONFIG.OP_API_BASE);
   
   try {
     printSubHeader('Fetching Main Agent DID Document');
@@ -98,7 +98,7 @@ async function act1AgentIdentity() {
     printInfo(`DID: ${CONFIG.MAIN_AGENT_DID}`);
     
     try {
-      const agentResponse = await client.get(`/agents/tron-foundation/${CONFIG.MAIN_AGENT_ID}/did.json`);
+      const agentResponse = await client.get(`/vac/${CONFIG.MAIN_AGENT_ID}`);
       demoState.mainAgent = agentResponse;
       printSuccess('DID Document retrieved (HTTP 200)');
       printJson(agentResponse, 'DID Document');
@@ -129,7 +129,7 @@ async function act1AgentIdentity() {
     
     printSubHeader('Fetching VAC Badge & Trust Score');
     try {
-      const vacResponse = await client.get(`/vac/${CONFIG.MAIN_AGENT_ID}`);
+      const vacResponse = await client.get(`/api/v1/vac/${CONFIG.MAIN_AGENT_ID}`);
       demoState.vac = vacResponse;
       printSuccess('VAC retrieved (HTTP 200)');
       printJson(vacResponse, 'Verifiable Agent Credential');
@@ -302,7 +302,7 @@ async function act4ReceiptVerification() {
     
     printSubHeader('Submitting Receipt to Observer Protocol');
     try {
-      const submitResponse = await client.post('/tron/receipts/submit', { vc: receiptVc });
+      const submitResponse = await client.post('/api/v1/tron/receipts/submit', { vc: receiptVc });
       demoState.receiptId = submitResponse.receipt_id;
       printSuccess('Receipt submitted successfully (HTTP 200)');
       printJson(submitResponse, 'Submission Response');
@@ -349,8 +349,8 @@ async function pauseBetweenActs(actNumber) {
 async function reissueVACCredentials() {
   printSubHeader('Step 3: Reissuing Verifiable Agent Credentials');
   printInfo('Cryptographically signing new VCs for both agents (historical VCs remain as snapshots)');
-  
-  const client = new OPApiClient(CONFIG.OP_API_V1);
+
+  const client = new OPApiClient(CONFIG.OP_API_BASE);
   
   // Reissue Main Agent VAC
   try {
