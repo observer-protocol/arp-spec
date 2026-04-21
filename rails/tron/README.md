@@ -419,3 +419,13 @@ MIT License — Observer Protocol
 
 *Implementation by: AI Agent (Kimi K2.5)*  
 *Mainnet Cutover: 2026-04-20*
+
+## Production Status
+
+**Mainnet Validated:** 2026-04-20  
+**Transaction Hash:** eb52108c9785a83d5ff381d6d5086dec4745d80dbaa1435b816c0f358754a006  
+**Tronscan:** https://tronscan.org/#/transaction/eb52108c9785a83d5ff381d6d5086dec4745d80dbaa1435b816c0f358754a006  
+**Amount:** 1.00 USDT-TRC20  
+**Status:** Phase 2 M4 Complete ✅
+
+The TRON rail has been validated on mainnet with real USDT transfers and end-to-end W3C DID/VC identity attestation.
