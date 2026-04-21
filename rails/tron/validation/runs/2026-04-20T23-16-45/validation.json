@@ -1,0 +1,57 @@
+{
+  "timestamp": "2026-04-20T23:16:45.243Z",
+  "network": "shasta",
+  "config": {
+    "network": "shasta",
+    "apiEndpoint": "https://api.shasta.trongrid.io",
+    "apiKey": "e8b1b143...3410",
+    "usdtContract": null,
+    "minConfirmations": 1,
+    "isTestnet": true
+  },
+  "sender": {
+    "did": "did:op:d13cdfceaa8f895afe56dc902179d279",
+    "address": "TU1haKQG7QjoGsLXQApXM6ypqSKqAH4UJs"
+  },
+  "receiver": {
+    "did": "did:op:9539cf2f0b3c3c6e2ee882a479aec6b9",
+    "address": "TY3kKtAJ77We4sgejWpwa9dnk31PCvcnvb"
+  },
+  "balances": {
+    "pre": {
+      "sender": {
+        "trx": 2000,
+        "usdt": null
+      },
+      "receiver": {
+        "trx": 0,
+        "usdt": null
+      }
+    },
+    "post": null
+  },
+  "transaction": {
+    "simulated": true,
+    "message": "No TX_HASH provided - transaction execution skipped"
+  },
+  "receipt": null,
+  "submission": null,
+  "trustScore": {
+    "before": {
+      "score": null,
+      "error": "fetch failed"
+    },
+    "after": null
+  },
+  "errors": [
+    {
+      "phase": "generate_receipt",
+      "message": "Invalid receipt data: Invalid tron_tx_hash format: must be 64 hex characters"
+    },
+    {
+      "phase": "submit_receipt",
+      "message": "fetch failed"
+    }
+  ],
+  "status": "running"
+}

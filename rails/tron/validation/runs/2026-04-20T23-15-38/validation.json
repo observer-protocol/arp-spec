@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-04-20T23:15:38.636Z",
+  "network": "shasta",
+  "config": {
+    "network": "shasta",
+    "apiEndpoint": "https://api.shasta.trongrid.io",
+    "apiKey": "e8b1b143...3410",
+    "usdtContract": null,
+    "minConfirmations": 1,
+    "isTestnet": true
+  },
+  "sender": null,
+  "receiver": null,
+  "balances": {
+    "pre": null,
+    "post": null
+  },
+  "transaction": null,
+  "receipt": null,
+  "submission": null,
+  "trustScore": {
+    "before": null,
+    "after": null
+  },
+  "errors": [],
+  "status": "failed"
+}

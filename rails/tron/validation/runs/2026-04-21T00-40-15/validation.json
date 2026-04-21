@@ -1,0 +1,39 @@
+{
+  "timestamp": "2026-04-21T00:40:15.024Z",
+  "network": "mainnet",
+  "config": {
+    "network": "mainnet",
+    "apiEndpoint": "https://api.trongrid.io",
+    "apiKey": "e8b1b143...3410",
+    "usdtContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    "minConfirmations": 19,
+    "isTestnet": false
+  },
+  "sender": {
+    "did": "did:op:d13cdfceaa8f895afe56dc902179d279",
+    "address": "TRh7rZZehnWXZ2X9eiwsWGGMWE8CdGgSP4"
+  },
+  "receiver": {
+    "did": "did:op:9539cf2f0b3c3c6e2ee882a479aec6b9",
+    "address": "TW6usPjgS1p3SNqqad6FgSCu1fEeTD4My3"
+  },
+  "balances": {
+    "pre": null,
+    "post": null
+  },
+  "transaction": null,
+  "receipt": null,
+  "submission": null,
+  "trustScore": {
+    "before": null,
+    "after": null
+  },
+  "errors": [
+    {
+      "phase": "check_balances",
+      "message": "Insufficient USDT for validation. Need at least 1.00 USDT, have 0.00 USDT",
+      "balance": 0
+    }
+  ],
+  "status": "failed"
+}

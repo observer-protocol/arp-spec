@@ -1,0 +1,25 @@
+{
+  "timestamp": "2026-04-21T00:39:20.699Z",
+  "network": null,
+  "config": null,
+  "sender": null,
+  "receiver": null,
+  "balances": {
+    "pre": null,
+    "post": null
+  },
+  "transaction": null,
+  "receipt": null,
+  "submission": null,
+  "trustScore": {
+    "before": null,
+    "after": null
+  },
+  "errors": [
+    {
+      "phase": "config",
+      "message": "TRON_NETWORK environment variable is not set. Please set TRON_NETWORK to \"mainnet\" or \"shasta\". Example: export TRON_NETWORK=mainnet\n\nTo use the TRON rail, you must set the TRON_NETWORK environment variable:\n  export TRON_NETWORK=mainnet   # For production/mainnet\n  export TRON_NETWORK=shasta    # For testing on Shasta testnet\n\nYou also need a TronGrid API key:\n  export TRONGRID_API_KEY=your_api_key_here\n\nGet a free API key at: https://www.trongrid.io/"
+    }
+  ],
+  "status": "failed"
+}

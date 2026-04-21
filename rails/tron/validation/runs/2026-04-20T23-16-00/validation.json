@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-04-20T23:16:00.032Z",
+  "network": "shasta",
+  "config": {
+    "network": "shasta",
+    "apiEndpoint": "https://api.shasta.trongrid.io",
+    "apiKey": "e8b1b143...3410",
+    "usdtContract": null,
+    "minConfirmations": 1,
+    "isTestnet": true
+  },
+  "sender": {
+    "did": "did:op:d13cdfceaa8f895afe56dc902179d279",
+    "address": "TU1haKQG7QjoGsLXQApXM6ypqSKqAH4UJs"
+  },
+  "receiver": {
+    "did": "did:op:9539cf2f0b3c3c6e2ee882a479aec6b9",
+    "address": "TY3kKtAJ77We4sgejWpwa9dnk31PCvcnvb"
+  },
+  "balances": {
+    "pre": {
+      "sender": {
+        "trx": 2000,
+        "usdt": null
+      },
+      "receiver": {
+        "trx": 0,
+        "usdt": null
+      }
+    },
+    "post": null
+  },
+  "transaction": {
+    "simulated": true,
+    "message": "No TX_HASH provided - transaction execution skipped"
+  },
+  "receipt": null,
+  "submission": {
+    "simulated": true,
+    "endpoint": "http://localhost:8000/api/v1/tron/receipts/submit",
+    "status": "accepted",
+    "vacId": "vac_mo7tcwyh"
+  },
+  "trustScore": {
+    "before": {
+      "score": 75.5,
+      "components": {
+        "volume": 80,
+        "diversity": 70,
+        "recency": 75,
+        "a2a_ratio": 85,
+        "org_verified": 68
+      },
+      "simulated": true
+    },
+    "after": {
+      "score": 75.5,
+      "components": {
+        "volume": 80,
+        "diversity": 70,
+        "recency": 75,
+        "a2a_ratio": 85,
+        "org_verified": 68
+      },
+      "simulated": true
+    }
+  },
+  "errors": [
+    {
+      "phase": "generate_receipt",
+      "message": "Invalid receipt data: Invalid tron_tx_hash format: must be 64 hex characters"
+    }
+  ],
+  "status": "running"
+}
