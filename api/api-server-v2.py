@@ -5952,6 +5952,10 @@ async def get_tron_receipts(
     """
     List TRON receipts for a specific agent.
     """
+    # Strip did:op: prefix if present (database stores raw agent_id)
+    if agent_id.startswith("did:op:"):
+        agent_id = agent_id[7:]
+    
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
@@ -6008,6 +6012,10 @@ async def get_tron_trust_score(agent_id: str):
     """
     Get TRON trust score for a specific agent.
     """
+    # Strip did:op: prefix if present (database stores raw agent_id)
+    if agent_id.startswith("did:op:"):
+        agent_id = agent_id[7:]
+    
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
@@ -6054,6 +6062,10 @@ async def get_tron_receipt_count(agent_id: str):
     """
     Get count of TRON receipts for an agent.
     """
+    # Strip did:op: prefix if present (database stores raw agent_id)
+    if agent_id.startswith("did:op:"):
+        agent_id = agent_id[7:]
+    
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
