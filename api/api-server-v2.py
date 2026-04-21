@@ -6139,3 +6139,105 @@ async def get_tron_leaderboard(
         cursor.close()
         conn.close()
 
+
+@app.get("/api/v1/transactions/{tx_hash}/details")
+async def transaction_details(tx_hash: str):
+    """
+    Return full transaction details including VC when available.
+    Spec 2.5 Deliverable 5 — supports the Details button on the dashboard.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        cursor.execute("""
+            SELECT id, agent_id, direction, counterparty_address,
+                   amount, asset, tx_hash, tron_status,
+                   network, rail, confirmations, block_number, timestamp,
+                   metadata, created_at
+            FROM agent_transactions
+            WHERE tx_hash = %s
+        """, (tx_hash,))
+        
+        tx_row = cursor.fetchone()
+        
+        if tx_row is None:
+            raise HTTPException(status_code=404, detail=f"Transaction {tx_hash} not found")
+        
+        metadata = tx_row["metadata"] or {}
+        has_vc = metadata.get("has_vc", False)
+        
+        # Build tronscan URL
+        net = tx_row["network"] or ""
+        if "mainnet" in net:
+            tronscan_url = f"https://tronscan.org/#/transaction/{tx_hash}"
+        elif "shasta" in net:
+            tronscan_url = f"https://shasta.tronscan.org/#/transaction/{tx_hash}"
+        else:
+            tronscan_url = None
+        
+        transaction_block = {
+            "tx_hash": tx_row["tx_hash"],
+            "direction": tx_row["direction"],
+            "amount": str(tx_row["amount"]),
+            "asset": tx_row["asset"],
+            "counterparty_address": tx_row["counterparty_address"],
+            "network": tx_row["network"],
+            "rail": tx_row["rail"],
+            "confirmations": tx_row["confirmations"],
+            "timestamp": tx_row["timestamp"].isoformat() if tx_row["timestamp"] else None,
+            "tronscan_url": tronscan_url,
+        }
+        
+        if not has_vc:
+            return {
+                "transaction": transaction_block,
+                "vc": {
+                    "available": False,
+                    "message": "Transaction detected via chain monitoring — no counterparty credential attached"
+                }
+            }
+        
+        # Fetch the receipt VC
+        cursor.execute("""
+            SELECT receipt_id, vc_id, issuer_did, subject_did, rail,
+                   verified, tron_grid_verified, signature_verified,
+                   issued_at, expires_at, vc_document
+            FROM tron_receipts
+            WHERE tron_tx_hash = %s
+            LIMIT 1
+        """, (tx_hash,))
+        
+        receipt_row = cursor.fetchone()
+        
+        if receipt_row is None:
+            return {
+                "transaction": transaction_block,
+                "vc": {
+                    "available": False,
+                    "message": "Credential referenced in metadata but not found in receipts table (data inconsistency)"
+                }
+            }
+        
+        return {
+            "transaction": transaction_block,
+            "vc": {
+                "available": True,
+                "vc_id": receipt_row["vc_id"],
+                "issuer_did": receipt_row["issuer_did"],
+                "subject_did": receipt_row["subject_did"],
+                "rail": receipt_row["rail"],
+                "verified": receipt_row["verified"],
+                "tron_grid_verified": receipt_row["tron_grid_verified"],
+                "signature_verified": receipt_row["signature_verified"],
+                "issued_at": receipt_row["issued_at"].isoformat() if receipt_row["issued_at"] else None,
+                "expires_at": receipt_row["expires_at"].isoformat() if receipt_row["expires_at"] else None,
+                "proof_type": "Ed25519Signature2020",
+                "receipt_id": str(receipt_row["receipt_id"]),
+                "full_vc_document": receipt_row["vc_document"],
+            }
+        }
+        
+    finally:
+        cursor.close()
+        conn.close()
+
