@@ -11,6 +11,7 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "base58": "^2.0.1"
+    "base58": "^2.0.1",
+    "tronweb": "^6.2.2"
   }
 }

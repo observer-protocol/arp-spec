@@ -14,10 +14,41 @@ import { dirname, join } from 'path';
 import readline from 'readline';
 import { randomUUID } from 'crypto';
 
+// Parse command line arguments
+const args = process.argv.slice(2);
+const CLI_OPTIONS = {
+  ACT4_ONLY: args.includes('--act4-only'),
+  TX_HASH: args.find(arg => arg.startsWith('--tx-hash='))?.split('=')[1] || null,
+  HELP: args.includes('--help') || args.includes('-h')
+};
+
+if (CLI_OPTIONS.HELP) {
+  console.log(`
+4-Act Demo Orchestrator
+
+Usage: node 4act-demo-orchestrator.mjs [options]
+
+Options:
+  --act4-only          Run only Act 4 (Receipt & Verification)
+  --tx-hash=<hash>     Use existing transaction hash (requires --act4-only)
+  --help, -h           Show this help message
+
+Examples:
+  node 4act-demo-orchestrator.mjs
+  node 4act-demo-orchestrator.mjs --act4-only --tx-hash=88db6559928afb11e9d54708cfe1bfdb7c39e544b8ddb569334415a164954b2e
+`);
+  process.exit(0);
+}
+
+if (CLI_OPTIONS.TX_HASH && !CLI_OPTIONS.ACT4_ONLY) {
+  console.error('Error: --tx-hash requires --act4-only flag');
+  process.exit(1);
+}
+
 // Configuration
 const CONFIG = {
-  OP_API_BASE: process.env.OP_API_URL || 'http://127.0.0.1:8000',
-  OP_API_V1: process.env.OP_API_V1_URL || 'http://127.0.0.1:8000/api/v1',
+  OP_API_BASE: process.env.OP_API_URL || 'http://127.0.0.1:8001',
+  OP_API_V1: process.env.OP_API_V1_URL || 'http://127.0.0.1:8001/api/v1',
   AT_DASHBOARD_URL: process.env.AT_DASHBOARD_URL || 'https://agenticterminal.com/enterprise/transactions',
   TRON_NETWORK: process.env.TRON_NETWORK || 'mainnet',
   TRONGRID_API_KEY: process.env.TRONGRID_API_KEY || '',
@@ -32,6 +63,11 @@ const CONFIG = {
 };
 
 const MAINNET_USDT_CONTRACT = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
+
+// Use provided TX hash from CLI if in act4-only mode
+if (CLI_OPTIONS.ACT4_ONLY && CLI_OPTIONS.TX_HASH) {
+  console.log(`  Using provided TX hash: ${CLI_OPTIONS.TX_HASH}`);
+}
 
 // Utility functions
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -74,7 +110,12 @@ class OPApiClient {
       headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      const error = new Error(`HTTP ${response.status}: ${errorText}`);
+      error.responseText = errorText;
+      throw error;
+    }
     return response.json();
   }
 }
@@ -258,7 +299,7 @@ async function act4ReceiptVerification() {
       credentialSubject: {
         id: CONFIG.MAIN_AGENT_DID,
         type: 'TronTransactionReceipt',
-        transactionHash: demoState.transactionHash,
+        tronTxHash: demoState.transactionHash,
         network: CONFIG.TRON_NETWORK,
         rail: 'tron:trc20',
         asset: 'USDT',
@@ -302,13 +343,22 @@ async function act4ReceiptVerification() {
     
     printSubHeader('Submitting Receipt to Observer Protocol');
     try {
-      const submitResponse = await client.post('/api/v1/tron/receipts/submit', { vc: receiptVc });
+      const clientV1 = new OPApiClient(CONFIG.OP_API_V1);
+      const submitResponse = await clientV1.post('/tron/receipts/submit', { vc: receiptVc });
       demoState.receiptId = submitResponse.receipt_id;
       printSuccess('Receipt submitted successfully (HTTP 200)');
       printJson(submitResponse, 'Submission Response');
     } catch (error) {
-      printWarning(`Receipt submission endpoint error: ${error.message}`);
-      demoState.receiptId = 'demo_' + Date.now();
+      printError(`Receipt submission failed: ${error.message}`);
+      // Try to get more details from the error response
+      try {
+        const errorBody = await error.response?.json();
+        printError(`Error details: ${JSON.stringify(errorBody)}`);
+      } catch (e) {
+        // Ignore secondary error
+      }
+      demoState.errors.push({ act: 4, step: 'receipt_submission', error: error.message });
+      throw new Error(`Act 4 failed: Receipt submission error - ${error.message}`);
     }
     
     // Step 2: Dashboard Visibility
@@ -441,17 +491,40 @@ async function runDemo() {
   console.log('  4-ACT DEMO ORCHESTRATOR');
   console.log('  Observer Protocol × TRON DAO');
   console.log('  For: Sam (TRON DAO Representative)');
+  if (CLI_OPTIONS.ACT4_ONLY) {
+    console.log('  MODE: Act 4 Only (Receipt & Verification)');
+  }
   console.log('='.repeat(70));
-  
+
   console.log('\n  Configuration:');
   console.log(`    API Base: ${CONFIG.OP_API_BASE}`);
   console.log(`    Network: ${CONFIG.TRON_NETWORK}`);
   console.log(`    Amount: ${CONFIG.DEMO_AMOUNT_USDT} USDT-TRC20`);
   console.log(`    Auto Mode: ${CONFIG.AUTO_MODE}`);
   console.log(`    Skip Live TX: ${CONFIG.SKIP_LIVE_TX}`);
-  
+  if (CLI_OPTIONS.TX_HASH) {
+    console.log(`    TX Hash (provided): ${CLI_OPTIONS.TX_HASH}`);
+  }
+
   demoState.startTime = new Date();
-  
+
+  // Act 4 Only Mode
+  if (CLI_OPTIONS.ACT4_ONLY) {
+    if (CLI_OPTIONS.TX_HASH) {
+      demoState.transactionHash = CLI_OPTIONS.TX_HASH;
+    }
+    const act4Result = await act4ReceiptVerification();
+    if (!act4Result.success) {
+      printError('Act 4 failed.');
+      rl.close();
+      process.exit(1);
+    }
+    const summary = await generateBDSummary();
+    rl.close();
+    process.exit(summary.success ? 0 : 1);
+    return;
+  }
+
   // ACT 1
   const act1Result = await act1AgentIdentity();
   if (!act1Result.success) {
@@ -459,7 +532,7 @@ async function runDemo() {
     rl.close();
     process.exit(1);
   }
-  
+
   const continueToAct2 = await pauseBetweenActs(2);
   if (continueToAct2) {
     const act2Result = await act2ServiceDiscovery();
@@ -469,7 +542,7 @@ async function runDemo() {
       process.exit(1);
     }
   }
-  
+
   const continueToAct3 = await pauseBetweenActs(3);
   if (continueToAct3) {
     const act3Result = await act3PaymentExecution();
@@ -484,12 +557,12 @@ async function runDemo() {
       process.exit(1);
     }
   }
-  
+
   const continueToAct4 = await pauseBetweenActs(4);
   if (continueToAct4) {
     await act4ReceiptVerification();
   }
-  
+
   const summary = await generateBDSummary();
   rl.close();
   process.exit(summary.success ? 0 : 1);

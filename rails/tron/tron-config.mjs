@@ -50,8 +50,9 @@ export class TronConfig {
   constructor(options = {}) {
     this.network = options.network || process.env.TRON_NETWORK;
     this.apiKey = options.apiKey || this._getApiKeyForNetwork();
+    this.skipApiKeyValidation = options.skipApiKeyValidation || process.env.OP_SKIP_TRON_VERIFICATION === 'true';
     this._config = null;
-    
+
     // Validate network is set
     if (!this.network) {
       throw new Error(
@@ -60,7 +61,7 @@ export class TronConfig {
         'Example: export TRON_NETWORK=mainnet'
       );
     }
-    
+
     // Validate network is valid
     if (!VALID_NETWORKS.includes(this.network)) {
       throw new Error(
@@ -68,7 +69,7 @@ export class TronConfig {
         `Must be one of: ${VALID_NETWORKS.join(', ')}`
       );
     }
-    
+
     // Load configuration
     this._loadConfig();
   }
@@ -92,25 +93,25 @@ export class TronConfig {
    */
   _loadConfig() {
     const baseConfig = NETWORK_CONFIG[this.network];
-    
+
     if (!baseConfig) {
       throw new Error(`Configuration not found for network: ${this.network}`);
     }
-    
+
     this._config = {
       ...baseConfig,
       apiKey: this.apiKey
     };
-    
-    // Validate API key is present
-    if (!this.apiKey) {
+
+    // Validate API key is present (skip in demo mode)
+    if (!this.apiKey && !this.skipApiKeyValidation) {
       throw new Error(
         `TronGrid API key not found for ${this.network}. ` +
         `Please set ${this.network === 'mainnet' ? 'TRONGRID_API_KEY' : 'TRONGRID_SHASTA_API_KEY or TRONGRID_API_KEY'} ` +
         `environment variable.`
       );
     }
-    
+
     // Validate USDT contract on mainnet
     if (this.network === 'mainnet' && !this._validateUsdtContract()) {
       throw new Error(

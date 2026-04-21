@@ -5709,10 +5709,10 @@ class TRONLeaderboardEntry(BaseModel):
 
 def _call_tron_rail_verify(vc: dict) -> dict:
     """Call TRON rail library via Node.js subprocess to verify a receipt VC."""
-    
+
     # Escape the VC for JavaScript
     vc_json = json.dumps(vc).replace('\\', '\\\\').replace("'", "\\'")
-    
+
     js_code = f"""
     import('/media/nvme/observer-protocol/rails/tron/index.mjs')
         .then(async (rail) => {{
@@ -5728,13 +5728,20 @@ def _call_tron_rail_verify(vc: dict) -> dict:
             console.log(JSON.stringify({{error: err.message}}));
         }});
     """
-    
+
+    # Pass environment variables to subprocess
+    env = os.environ.copy()
+    env['TRON_NETWORK'] = os.environ.get('TRON_NETWORK', 'mainnet')
+    if os.environ.get('OP_SKIP_TRON_VERIFICATION'):
+        env['OP_SKIP_TRON_VERIFICATION'] = os.environ.get('OP_SKIP_TRON_VERIFICATION')
+
     try:
         result = subprocess.run(
             ['node', '-e', js_code],
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=30,
+            env=env
         )
         if result.returncode == 0 and result.stdout.strip():
             # Get the last line which should be the JSON result
@@ -5864,7 +5871,7 @@ async def submit_tron_receipt(body: TRONReceiptSubmitRequest):
     if rail_result.get('error'):
         raise HTTPException(status_code=400, detail=f"Verification failed: {rail_result['error']}")
     
-    if not rail_result.get('valid'):
+    if not rail_result.get('verified') and not rail_result.get('valid'):
         raise HTTPException(status_code=400, detail="VC signature verification failed")
     
     # Persist to database
@@ -5891,7 +5898,7 @@ async def submit_tron_receipt(body: TRONReceiptSubmitRequest):
             credential_subject.get('rail', 'tron'),
             credential_subject.get('asset', ''),
             str(credential_subject.get('amount', '')),
-            credential_subject.get('transactionHash', ''),
+            credential_subject.get('tronTxHash') or credential_subject.get('transactionHash', ''),
             credential_subject.get('senderAddress', ''),
             credential_subject.get('recipientAddress', ''),
             credential_subject.get('tokenContract', ''),

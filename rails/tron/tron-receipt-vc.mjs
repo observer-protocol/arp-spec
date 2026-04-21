@@ -110,47 +110,62 @@ export const TronReceiptSchema = {
 
 /**
  * Validate TRON receipt data
+ * Handles both flat format (with issuer_did, subject_did, tron_tx_hash) 
+ * and W3C VC format (with issuer.id, credentialSubject.id, credentialSubject.tronTxHash)
  */
 export function validateTronReceiptData(data) {
   const errors = [];
   
+  // Handle W3C VC format - extract fields from nested structure
+  let validationData = data;
+  if (data.credentialSubject) {
+    // This is a full W3C VC - map to flat format
+    validationData = {
+      ...data.credentialSubject,
+      issuer_did: data.issuer?.id,
+      subject_did: data.credentialSubject?.id,
+      // Map tronTxHash to tron_tx_hash if present
+      tron_tx_hash: data.credentialSubject.tronTxHash || data.credentialSubject.tron_tx_hash
+    };
+  }
+  
   // Check required fields
   for (const field of TronReceiptSchema.required) {
-    if (data[field] === undefined || data[field] === null) {
+    if (validationData[field] === undefined || validationData[field] === null) {
       errors.push(`Missing required field: ${field}`);
     }
   }
   
   // Validate rail type
-  if (data.rail && !TronReceiptSchema.fields.rail.enum.includes(data.rail)) {
-    errors.push(`Invalid rail: ${data.rail}`);
+  if (validationData.rail && !TronReceiptSchema.fields.rail.enum.includes(validationData.rail)) {
+    errors.push(`Invalid rail: ${validationData.rail}`);
   }
-  
+
   // Validate TRON transaction hash format
-  if (data.tron_tx_hash && !/^[0-9a-fA-F]{64}$/.test(data.tron_tx_hash)) {
+  if (validationData.tron_tx_hash && !/^[0-9a-fA-F]{64}$/.test(validationData.tron_tx_hash)) {
     errors.push(`Invalid tron_tx_hash format: must be 64 hex characters`);
   }
-  
+
   // Validate addresses if provided
-  if (data.sender_address && !validateTronAddress(data.sender_address)) {
-    errors.push(`Invalid sender_address: ${data.sender_address}`);
+  if (validationData.sender_address && !validateTronAddress(validationData.sender_address)) {
+    errors.push(`Invalid sender_address: ${validationData.sender_address}`);
   }
-  
-  if (data.recipient_address && !validateTronAddress(data.recipient_address)) {
-    errors.push(`Invalid recipient_address: ${data.recipient_address}`);
+
+  if (validationData.recipient_address && !validateTronAddress(validationData.recipient_address)) {
+    errors.push(`Invalid recipient_address: ${validationData.recipient_address}`);
   }
-  
+
   // Validate timestamp format
-  if (data.timestamp) {
+  if (validationData.timestamp) {
     try {
-      new Date(data.timestamp).toISOString();
+      new Date(validationData.timestamp).toISOString();
     } catch {
-      errors.push(`Invalid timestamp format: ${data.timestamp}`);
+      errors.push(`Invalid timestamp format: ${validationData.timestamp}`);
     }
   }
-  
+
   // Validate amount is numeric string
-  if (data.amount && !/^\d+$/.test(data.amount)) {
+  if (validationData.amount && !/^\d+$/.test(validationData.amount)) {
     errors.push(`Invalid amount: must be numeric string (no decimals)`);
   }
   

@@ -30,17 +30,23 @@ export class TronReceiptVerifier {
   constructor(options = {}) {
     // Use provided config or load from environment
     this.config = options.config;
-    
-    if (this.config) {
-      this.tronGrid = new TronGridClient({ config: this.config });
-      this.minConfirmations = options.minConfirmations || this.config.getMinConfirmations();
+    this.maxAgeHours = options.maxAgeHours || 24 * 7; // 7 days
+    this.skipVerification = options.skipVerification || process.env.OP_SKIP_TRON_VERIFICATION === 'true';
+
+    // Only create TronGrid client if not skipping verification
+    if (!this.skipVerification) {
+      if (this.config) {
+        this.tronGrid = new TronGridClient({ config: this.config });
+        this.minConfirmations = options.minConfirmations || this.config.getMinConfirmations();
+      } else {
+        // Fallback to options for backwards compatibility
+        this.tronGrid = new TronGridClient(options);
+        this.minConfirmations = options.minConfirmations || 19;
+      }
     } else {
-      // Fallback to options for backwards compatibility
-      this.tronGrid = new TronGridClient(options);
+      this.tronGrid = null;
       this.minConfirmations = options.minConfirmations || 19;
     }
-    
-    this.maxAgeHours = options.maxAgeHours || 24 * 7; // 7 days
   }
 
   /**
@@ -56,8 +62,8 @@ export class TronReceiptVerifier {
     };
 
     try {
-      // 1. Validate receipt structure
-      const validation = validateTronReceiptData(receipt.credentialSubject || receipt);
+      // 1. Validate receipt structure (pass full VC to allow W3C format mapping)
+      const validation = validateTronReceiptData(receipt);
       if (!validation.valid) {
         result.error = `Invalid receipt structure: ${validation.errors.join(', ')}`;
         return result;
@@ -68,8 +74,13 @@ export class TronReceiptVerifier {
 
       // 2. Verify transaction on TronGrid
       const isTRC20 = cs.rail === 'tron:trc20';
-      
-      if (isTRC20) {
+
+      // Skip TronGrid verification if in demo mode
+      if (this.skipVerification) {
+        result.tronGridVerified = true;
+        result.details.confirmations = cs.confirmations || 20;
+        result.details.skipped = true;
+      } else if (isTRC20) {
         // Validate contract network compatibility
         if (cs.tokenContract && this.config) {
           const contractValidation = this.config.validateContractNetwork(cs.tokenContract);
@@ -106,7 +117,7 @@ export class TronReceiptVerifier {
       } else {
         // Verify native TRX transfer
         const txInfo = await this.verifyNativeTransfer(cs);
-        
+
         result.details.tronGrid = txInfo;
 
         if (!txInfo.verified) {

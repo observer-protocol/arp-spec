@@ -1,0 +1,18 @@
+{
+  "agent_id": "rwa-settlement-demo-agent",
+  "did": "did:web:observerprotocol.org:agents:rwa-settlement-demo-agent",
+  "alias": "RWA-Settlement-Demo",
+  "description": "Real-world asset settlement demonstration agent for live USDC transfer workflows",
+  "org_affiliation": "Observer Protocol Demo",
+  "chains": ["tron", "evm"],
+  "verified": true,
+  "trust_score": 50,
+  "created_at": "2026-04-20T23:41:22.972151-04:00",
+  "credential_id": "93da9516-9625-47b6-ad8e-a34e15d3528f",
+  "vac_version": "2.0.0",
+  "vac_issued_at": "2026-04-20T23:41:54.932173-04:00",
+  "vac_expires_at": "2026-04-27T23:41:54-04:00",
+  "public_key": "021bd3f1ef04016bc953e331e4b340159cdde038a898d9104b2cf7796dfdc240",
+  "vac_endpoint": "https://observerprotocol.org/vac/rwa-settlement-demo-agent",
+  "agent_info_endpoint": "https://observerprotocol.org/observer/agent/rwa-settlement-demo-agent"
+}
