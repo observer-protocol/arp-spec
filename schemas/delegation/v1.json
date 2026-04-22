@@ -1,0 +1,339 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://observerprotocol.org/schemas/delegation/v1.json",
+  "title": "Delegation Credential Schema",
+  "description": "W3C Verifiable Credential schema for recursive DID-to-DID delegation (Spec 3.2)",
+  "type": "object",
+  "required": [
+    "@context",
+    "id",
+    "type",
+    "issuer",
+    "validFrom",
+    "validUntil",
+    "credentialSubject",
+    "credentialSchema",
+    "proof"
+  ],
+  "properties": {
+    "@context": {
+      "type": "array",
+      "minItems": 2,
+      "items": [
+        {
+          "type": "string",
+          "const": "https://www.w3.org/ns/credentials/v2"
+        },
+        {
+          "type": "string",
+          "const": "https://observerprotocol.org/contexts/delegation/v1"
+        }
+      ],
+      "additionalItems": true
+    },
+    "id": {
+      "type": "string",
+      "format": "uri",
+      "description": "Unique identifier URL for this delegation credential"
+    },
+    "type": {
+      "type": "array",
+      "minItems": 2,
+      "contains": [
+        { "const": "VerifiableCredential" },
+        { "const": "DelegationCredential" }
+      ]
+    },
+    "issuer": {
+      "type": "string",
+      "format": "uri",
+      "description": "DID of the issuer (delegating party)"
+    },
+    "validFrom": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when delegation becomes valid"
+    },
+    "validUntil": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when delegation expires"
+    },
+    "credentialSubject": {
+      "type": "object",
+      "required": ["id", "actionScope", "delegationScope", "acl", "enforcementMode", "parentDelegationId"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uri",
+          "description": "DID of the subject (the party being delegated to)"
+        },
+        "actionScope": {
+          "type": "object",
+          "properties": {
+            "allowed_rails": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["tron", "trc20", "lightning", "solana", "x402", "l402", "bitcoin", "ethereum", "evm"]
+              },
+              "description": "List of payment rails the subject may use"
+            },
+            "allowed_counterparty_types": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["verified_merchant", "kyb_verified_org", "did_verified_agent", "delegated_agent", "individual", "unverified"]
+              },
+              "description": "Types of counterparties the subject may transact with"
+            },
+            "per_transaction_ceiling": {
+              "type": "object",
+              "required": ["amount", "currency"],
+              "properties": {
+                "amount": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(\\.[0-9]+)?$",
+                  "description": "Maximum amount per individual transaction"
+                },
+                "currency": {
+                  "type": "string",
+                  "pattern": "^[A-Z]{3}$",
+                  "description": "ISO 4217 currency code"
+                }
+              }
+            },
+            "cumulative_ceiling": {
+              "type": "object",
+              "required": ["amount", "currency", "period"],
+              "properties": {
+                "amount": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(\\.[0-9]+)?$",
+                  "description": "Maximum cumulative amount over the period"
+                },
+                "currency": {
+                  "type": "string",
+                  "pattern": "^[A-Z]{3}$",
+                  "description": "ISO 4217 currency code"
+                },
+                "period": {
+                  "type": "string",
+                  "pattern": "^P[0-9]+[YMD]$",
+                  "description": "ISO 8601 duration (e.g., P30D for 30 days)"
+                }
+              }
+            },
+            "geographic_restriction": {
+              "type": "object",
+              "properties": {
+                "allowed": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Z]{2}$"
+                  },
+                  "description": "ISO 3166 country codes allowed"
+                },
+                "disallowed": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Z]{2}$"
+                  },
+                  "description": "ISO 3166 country codes disallowed"
+                }
+              }
+            },
+            "allowed_merchant_categories": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "description": "MCC codes or equivalent merchant category identifiers"
+              },
+              "description": "Merchant categories the subject may transact with"
+            }
+          }
+        },
+        "delegationScope": {
+          "type": "object",
+          "required": ["may_delegate_further"],
+          "properties": {
+            "may_delegate_further": {
+              "type": "boolean",
+              "description": "Whether the subject may issue further delegations"
+            },
+            "max_child_action_scope": {
+              "type": "object",
+              "description": "Maximum action scope that any child delegation may carry",
+              "properties": {
+                "allowed_rails": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["tron", "trc20", "lightning", "solana", "x402", "l402", "bitcoin", "ethereum", "evm"]
+                  }
+                },
+                "allowed_counterparty_types": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["verified_merchant", "kyb_verified_org", "did_verified_agent", "delegated_agent", "individual", "unverified"]
+                  }
+                },
+                "per_transaction_ceiling": {
+                  "type": "object",
+                  "required": ["amount", "currency"],
+                  "properties": {
+                    "amount": {
+                      "type": "string",
+                      "pattern": "^[0-9]+(\\.[0-9]+)?$"
+                    },
+                    "currency": {
+                      "type": "string",
+                      "pattern": "^[A-Z]{3}$"
+                    }
+                  }
+                },
+                "cumulative_ceiling": {
+                  "type": "object",
+                  "required": ["amount", "currency", "period"],
+                  "properties": {
+                    "amount": {
+                      "type": "string",
+                      "pattern": "^[0-9]+(\\.[0-9]+)?$"
+                    },
+                    "currency": {
+                      "type": "string",
+                      "pattern": "^[A-Z]{3}$"
+                    },
+                    "period": {
+                      "type": "string",
+                      "pattern": "^P[0-9]+[YMD]$"
+                    }
+                  }
+                },
+                "geographic_restriction": {
+                  "type": "object",
+                  "properties": {
+                    "allowed": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^[A-Z]{2}$"
+                      }
+                    },
+                    "disallowed": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^[A-Z]{2}$"
+                      }
+                    }
+                  }
+                },
+                "allowed_merchant_categories": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "may_delegate_delegation_authority": {
+              "type": "boolean",
+              "description": "Whether children may themselves authorize further delegations"
+            },
+            "allowed_child_subject_types": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["verified_merchant", "kyb_verified_org", "did_verified_agent", "delegated_agent", "individual", "unverified"]
+              },
+              "description": "Types of subjects this delegation may be issued to"
+            }
+          }
+        },
+        "acl": {
+          "type": "object",
+          "required": ["revocation_authority", "modification_authority"],
+          "properties": {
+            "revocation_authority": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uri"
+              },
+              "description": "DIDs authorized to revoke this delegation"
+            },
+            "modification_authority": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uri"
+              },
+              "description": "DIDs authorized to modify this delegation"
+            }
+          }
+        },
+        "enforcementMode": {
+          "type": "string",
+          "enum": ["protocol_native", "pre_transaction_check"],
+          "description": "How the action scope is enforced at transaction time"
+        },
+        "parentDelegationId": {
+          "type": ["string", "null"],
+          "format": "uri",
+          "description": "URL of parent delegation (null for root delegations)"
+        },
+        "kybCredentialId": {
+          "type": ["string", "null"],
+          "format": "uri",
+          "description": "URL of KYB VC backing this delegation (optional)"
+        }
+      }
+    },
+    "credentialSchema": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uri",
+          "const": "https://observerprotocol.org/schemas/delegation/v1.json"
+        },
+        "type": {
+          "type": "string",
+          "const": "JsonSchema"
+        }
+      }
+    },
+    "proof": {
+      "type": "object",
+      "required": ["type", "created", "verificationMethod", "proofPurpose", "proofValue"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "Ed25519Signature2020"
+        },
+        "created": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "verificationMethod": {
+          "type": "string",
+          "format": "uri"
+        },
+        "proofPurpose": {
+          "type": "string",
+          "const": "assertionMethod"
+        },
+        "proofValue": {
+          "type": "string",
+          "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
+          "description": "Base58BTC-encoded signature with 'z' multibase prefix"
+        }
+      }
+    }
+  }
+}
