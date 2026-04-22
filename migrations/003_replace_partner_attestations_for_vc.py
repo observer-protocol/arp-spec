@@ -34,11 +34,6 @@ CREATE INDEX idx_partner_attestations_subject  ON partner_attestations(subject_d
 CREATE INDEX idx_partner_attestations_issuer   ON partner_attestations(issuer_did);
 CREATE INDEX idx_partner_attestations_type     ON partner_attestations(credential_type);
 CREATE INDEX idx_partner_attestations_validity ON partner_attestations(valid_until);
-
--- Additional composite index for common dashboard queries
-CREATE INDEX idx_partner_attestations_subject_valid 
-    ON partner_attestations(subject_did, valid_until) 
-    WHERE valid_until > NOW();
 """
 
 
