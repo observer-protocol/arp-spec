@@ -130,16 +130,11 @@ def extract_public_key_bytes(
     """
     Extract the Ed25519 public key bytes from a DID Document.
 
-    Args:
-        did_document: A validated DID Document dict.
-        key_id: The specific verificationMethod id to use.
-                If None, the first method is used.
+    Expects publicKeyMultibase per W3C Ed25519VerificationKey2020:
+    base58btc-encoded (z-prefix) multicodec-prefixed key (0xed01 + 32 bytes).
 
-    Returns:
-        Raw public key bytes.
-
-    Raises:
-        ValueError: If the key is not found or cannot be decoded.
+    Returns the raw 32-byte Ed25519 public key after verifying format and
+    stripping the multicodec prefix.
     """
     methods = did_document.get("verificationMethod", [])
     if not methods:
@@ -148,19 +143,38 @@ def extract_public_key_bytes(
     if key_id:
         vm = next((m for m in methods if m.get("id") == key_id), None)
         if vm is None:
-            raise ValueError(
-                f"Key ID {key_id!r} not found in DID Document"
-            )
+            raise ValueError(f"Key ID {key_id!r} not found in DID Document")
     else:
         vm = methods[0]
+
+    vm_type = vm.get("type")
+    if vm_type != "Ed25519VerificationKey2020":
+        raise ValueError(
+            f"Unsupported verificationMethod type {vm_type!r}; "
+            f"only Ed25519VerificationKey2020 is currently supported"
+        )
 
     multibase = vm.get("publicKeyMultibase", "")
     if not multibase.startswith("z"):
         raise ValueError(
-            "publicKeyMultibase must use base58btc encoding (prefix 'z')"
+            f"publicKeyMultibase must use base58btc encoding (prefix 'z'), "
+            f"got {multibase[:10]!r}..."
         )
 
-    return base58.b58decode(multibase[1:])
+    decoded = base58.b58decode(multibase[1:])
+    if len(decoded) != 34:
+        raise ValueError(
+            f"Ed25519VerificationKey2020 publicKeyMultibase must decode to "
+            f"34 bytes (2-byte multicodec prefix + 32-byte key); got {len(decoded)} bytes. "
+            f"Per W3C spec, the multicodec prefix 0xed01 is required."
+        )
+    if decoded[0] != 0xed or decoded[1] != 0x01:
+        raise ValueError(
+            f"Expected Ed25519 multicodec prefix 0xed01, "
+            f"got 0x{decoded[0]:02x}{decoded[1]:02x}"
+        )
+
+    return decoded[2:]  # strip the 2-byte prefix, return the 32-byte raw key
 
 
 def extract_public_key_hex(
