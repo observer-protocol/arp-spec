@@ -1,3 +1,26 @@
 api/venv/
 __pycache__/
 *.pyc
+
+# Credentials and secrets (§13.5 hardening)
+*credentials*.json
+*credentials*.yaml
+*credentials*.yml
+*secret*.json
+*secret*.yaml
+*secret*.yml
+*private*.json
+*private*.pem
+*private*.key
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+secrets/
+secure-keys/
+
+# Wallet and key storage
+*wallet*.json
+*seed*.txt
+*mnemonic*.txt
