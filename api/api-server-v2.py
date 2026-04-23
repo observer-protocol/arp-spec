@@ -2763,6 +2763,7 @@ def get_agent_attestations(
 @app.post("/vac/{credential_id}/counterparty")
 def add_counterparty_metadata(
     credential_id: str,
+    raw_request: Request,
     request: CounterpartyMetadataRequest
 ):
     """
@@ -2895,6 +2896,7 @@ def get_revocation_registry(
 @app.post("/vac/{credential_id}/revoke")
 def revoke_credential(
     credential_id: str,
+    raw_request: Request,
     reason: str,
     details: Optional[str] = None,
     revoked_by: Optional[str] = None
@@ -2907,6 +2909,7 @@ def revoke_credential(
     Revoked credentials are permanently invalidated and cannot be renewed.
     A new credential must be issued.
     """
+    validate_enterprise_session(raw_request)
     valid_reasons = ['compromise', 'expiry', 'violation', 'request', 'other']
     
     if reason not in valid_reasons:
@@ -3136,8 +3139,9 @@ def list_organizations_endpoint(
         raise HTTPException(status_code=500, detail=f"Failed to list organizations: {str(e)}")
 
 @app.post("/observer/orgs/{org_id}/revoke")
-def revoke_organization_endpoint(org_id: str, request: OrganizationRevocationRequest):
+def revoke_organization_endpoint(org_id: str, request: OrganizationRevocationRequest, raw_request: Request):
     """Revoke an organization (soft delete)."""
+    validate_enterprise_session(raw_request)
     try:
         result = org_registry.revoke_organization(
             org_id=org_id,
@@ -3695,13 +3699,14 @@ class KeyRotationRequest(BaseModel):
         extra = "forbid"
 
 @app.put("/agents/{agent_id}/keys", tags=["DID"])
-def rotate_agent_key(agent_id: str, request: KeyRotationRequest):
+def rotate_agent_key(agent_id: str, request: KeyRotationRequest, raw_request: Request):
     """
     Rotate an agent's key.
 
     Builds a new DID Document from the new public key and stores it.
     The DID string itself never changes — only the verificationMethod is updated.
     """
+    validate_enterprise_session(raw_request)
     if not request.new_public_key or len(request.new_public_key) < 32:
         raise HTTPException(
             status_code=400,
@@ -3884,13 +3889,14 @@ def request_delegation(request: DelegationRequest):
         conn.close()
 
 @app.post("/observer/approve-delegation")
-def approve_delegation(request: DelegationApprovalRequest):
+def approve_delegation(request: DelegationApprovalRequest, raw_request: Request):
     """
     Approve a delegation request and issue Delegation VC.
     
     Called by AT dashboard when human admin approves.
     Issues VC, stores on agent record, and recomputes trust score.
     """
+    validate_enterprise_session(raw_request)
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     
