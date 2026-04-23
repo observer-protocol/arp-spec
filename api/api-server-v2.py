@@ -121,6 +121,7 @@ from did_document_builder import (
     build_op_did_document,
 )
 from did_resolver import resolve_did, validate_did_document
+from role_enforcement import require_role
 # Spec 3.8: SSO routes (SAML authentication)
 from sso_routes import router as sso_router, configure as configure_sso
 
@@ -645,7 +646,7 @@ def get_stats():
 def get_agent_events(request: Request, limit: int = 20, agent_id: str = None):
     """Get agent events for authenticated enterprise org only."""
     # Validate session and get org_id
-    user_id, org_id, email, role = validate_enterprise_session(request)
+    user_id, org_id, email, role = require_role(validate_enterprise_session(request), "viewer")
     
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -935,7 +936,7 @@ def list_agents_for_org(
     AUTHENTICATED: Requires valid enterprise session and session org must match path org.
     """
     # Validate session and verify user is requesting their own org's data
-    user_id, session_org_id, email, role = validate_enterprise_session(request)
+    user_id, session_org_id, email, role = require_role(validate_enterprise_session(request), "viewer")
     if session_org_id != org_id:
         raise HTTPException(status_code=403, detail="Access denied - cannot access other organizations' data")
     
@@ -1028,7 +1029,7 @@ def get_agent_detail_full(
     AUTHENTICATED: Requires valid enterprise session.
     """
     # Validate session
-    user_id, session_org_id, email, role = validate_enterprise_session(request)
+    user_id, session_org_id, email, role = require_role(validate_enterprise_session(request), "viewer")
     
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1590,7 +1591,7 @@ def get_trends():
 def get_feed(request: Request, limit: int = 50):
     """Get last 50 verified events for authenticated org (anonymized — no agent_id in response)."""
     # Validate session and get org_id
-    user_id, org_id, email, role = validate_enterprise_session(request)
+    user_id, org_id, email, role = require_role(validate_enterprise_session(request), "viewer")
     
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -2063,7 +2064,7 @@ def get_vac_credential_full(request: Request, agent_id: str, include_extensions:
     Requires valid enterprise session.
     """
     # Validate session
-    validate_enterprise_session(request)
+    require_role(validate_enterprise_session(request), "viewer")
     
     try:
         generator = VACGenerator()
@@ -2390,7 +2391,7 @@ def get_vac_history_full(request: Request, agent_id: str, limit: int = 10):
     Requires valid enterprise session.
     """
     # Validate session
-    validate_enterprise_session(request)
+    require_role(validate_enterprise_session(request), "viewer")
     
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -4020,7 +4021,7 @@ def get_delegation(request: Request, agent_id: str):
     are NOT returned here for privacy/security.
     """
     # Validate session and get org_id
-    user_id, org_id, email, role = validate_enterprise_session(request)
+    user_id, org_id, email, role = require_role(validate_enterprise_session(request), "viewer")
     
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -4102,7 +4103,7 @@ if __name__ == "__main__":
 def get_transactions(request: Request, limit: int = 50, agent_id: str = None):
     """Get transactions for the authenticated enterprise org only."""
     # Validate session and get org_id
-    user_id, org_id, email, role = validate_enterprise_session(request)
+    user_id, org_id, email, role = require_role(validate_enterprise_session(request), "viewer")
     
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -5450,7 +5451,7 @@ async def auth_login(body: AuthLoginRequest, request: Request):
 async def add_wallet(body: AddWalletRequest, request: Request):
     """Add additional wallet to existing account."""
     # Validate session
-    user_id, org_id, email, role = validate_enterprise_session(request)
+    user_id, org_id, email, role = require_role(validate_enterprise_session(request), "operator")
     
     from datetime import datetime, timezone
     
@@ -5524,7 +5525,7 @@ async def add_wallet(body: AddWalletRequest, request: Request):
 @app.get("/api/v1/enterprise/wallets")
 def get_wallets(request: Request):
     """Get all wallets bound to authenticated account."""
-    user_id, org_id, email, role = validate_enterprise_session(request)
+    user_id, org_id, email, role = require_role(validate_enterprise_session(request), "viewer")
     
     conn = get_db_connection()
     cursor = conn.cursor()
