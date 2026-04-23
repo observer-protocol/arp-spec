@@ -41,11 +41,15 @@ def _decode_public_key_to_bytes(public_key: str) -> bytes:
 
 def encode_public_key_multibase(public_key: str) -> str:
     """
-    Encode a public key as multibase base58btc (prefix 'z').
+    Encode a public key as multibase base58btc (prefix 'z') with multicodec prefix.
+    Produces W3C-standard Ed25519VerificationKey2020 format: 0xed01 + 32-byte key.
     Accepts hex-encoded or base58-encoded input.
     """
     key_bytes = _decode_public_key_to_bytes(public_key)
-    return "z" + base58.b58encode(key_bytes).decode("ascii")
+    if len(key_bytes) != 32:
+        raise ValueError(f"Ed25519 public key must be 32 bytes, got {len(key_bytes)}.")
+    prefixed = b"\xed\x01" + key_bytes
+    return "z" + base58.b58encode(prefixed).decode("ascii")
 
 
 def decode_multibase_to_bytes(multibase_key: str) -> bytes:

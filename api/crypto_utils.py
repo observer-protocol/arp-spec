@@ -78,15 +78,22 @@ def load_public_key_from_hex(public_key_hex: str) -> Ed25519PublicKey:
 
 
 def load_public_key_from_multibase(multibase: str) -> Ed25519PublicKey:
-    """Load an Ed25519PublicKey from a base58btc multibase string (prefix 'z')."""
+    """Load an Ed25519PublicKey from a base58btc multibase string (prefix 'z').
+
+    Accepts both formats:
+    - Raw 32-byte Ed25519 public key (legacy format, pre-W3C-alignment)
+    - Multicodec-prefixed 34-byte key: 0xed01 + 32-byte key (W3C Ed25519VerificationKey2020)
+    """
     if not isinstance(multibase, str) or not multibase.startswith("z"):
         raise ValueError(
             "publicKeyMultibase must use base58btc encoding (prefix 'z')"
         )
     key_bytes = base58.b58decode(multibase[1:])
+    if len(key_bytes) == 34 and key_bytes[:2] == b"\xed\x01":
+        key_bytes = key_bytes[2:]
     if len(key_bytes) != 32:
         raise ValueError(
-            f"Ed25519 public key must be 32 bytes, got {len(key_bytes)}."
+            f"Ed25519 public key must be 32 bytes (or 34 bytes with 0xed01 multicodec prefix), got {len(key_bytes)}."
         )
     return Ed25519PublicKey.from_public_bytes(key_bytes)
 
