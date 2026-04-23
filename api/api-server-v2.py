@@ -122,6 +122,9 @@ from did_document_builder import (
 )
 from did_resolver import resolve_did, validate_did_document
 
+# Spec 3.3: Status list routes (revocation/suspension)
+from status_list_routes import router as status_list_router, configure as configure_status_lists
+
 # Flag for crypto availability - cryptography library is confirmed available
 ECDSA_AVAILABLE = True
 
@@ -342,6 +345,17 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "PUT", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# ============================================================
+# SPEC 3.3: STATUS LIST ROUTES (Revocation & Lifecycle)
+# ============================================================
+_op_base_url = os.environ.get("OP_BASE_URL", "https://api.observerprotocol.org")
+configure_status_lists(
+    get_db_connection_fn=get_db_connection,
+    resolve_did_fn=resolve_did,
+    base_url=_op_base_url,
+)
+app.include_router(status_list_router)
 
 @app.on_event("startup")
 def startup_event():
