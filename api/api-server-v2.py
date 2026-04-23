@@ -121,6 +121,8 @@ from did_document_builder import (
     build_op_did_document,
 )
 from did_resolver import resolve_did, validate_did_document
+# Spec 3.8: SSO routes (SAML authentication)
+from sso_routes import router as sso_router, configure as configure_sso
 
 # Spec 3.3: Status list routes (revocation/suspension)
 from status_list_routes import router as status_list_router, configure as configure_status_lists
@@ -356,6 +358,15 @@ configure_status_lists(
     base_url=_op_base_url,
 )
 app.include_router(status_list_router)
+
+# SPEC 3.8: SSO ROUTES
+configure_sso(
+    get_db_connection_fn=get_db_connection,
+    validate_admin_session_fn=validate_enterprise_session,
+    dashboard_url=os.environ.get("AT_DASHBOARD_URL", "https://app.agenticterminal.io"),
+    cookie_domain=os.environ.get("AT_COOKIE_DOMAIN", ".agenticterminal.io"),
+)
+app.include_router(sso_router)
 
 @app.on_event("startup")
 def startup_event():
