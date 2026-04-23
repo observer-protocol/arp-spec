@@ -24,3 +24,7 @@ secure-keys/
 *wallet*.json
 *seed*.txt
 *mnemonic*.txt
+
+# Node dependencies
+node_modules/
+**/node_modules/
