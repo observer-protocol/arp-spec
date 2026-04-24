@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.observerprotocol.org/audit/v0.1/agent-activity.json",
+  "title": "AgentActivityCredential",
+  "description": "W3C Verifiable Credential schema for agent-signed activity records. V0.1 covers transaction activity between known parties.",
+  "type": "object",
+  "required": ["@context", "id", "type", "issuer", "validFrom", "credentialSubject", "proof"],
+  "additionalProperties": false,
+  "properties": {
+    "@context": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "type": "string" },
+      "contains": { "const": "https://schemas.observerprotocol.org/audit/v0.1" }
+    },
+    "id": { "type": "string", "format": "uri" },
+    "type": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "type": "string" },
+      "contains": { "const": "AgentActivityCredential" }
+    },
+    "issuer": { "type": "string", "format": "uri" },
+    "validFrom": { "type": "string", "format": "date-time" },
+    "validUntil": { "type": "string", "format": "date-time" },
+    "credentialSchema": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "format": "uri" },
+        "type": { "type": "string" }
+      }
+    },
+    "credentialSubject": {
+      "type": "object",
+      "required": ["id", "activityType", "activityTimestamp"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "format": "uri", "description": "Agent DID (same as issuer for self-attestation)" },
+        "activityType": { "type": "string", "description": "Registry value: transaction_initiated, transaction_received, credential_presented, etc." },
+        "activityDescription": { "type": "string" },
+        "activityTimestamp": { "type": "string", "format": "date-time" },
+        "delegationCredentialId": { "type": ["string", "null"], "format": "uri" },
+        "counterpartyDid": { "type": ["string", "null"], "format": "uri" },
+        "expectsCounterpartyReceipt": { "type": "boolean" },
+        "expectedReceiptWindow": { "type": ["string", "null"], "description": "ISO 8601 duration, e.g. PT5M" },
+        "transactionDetails": {
+          "type": "object",
+          "properties": {
+            "rail": { "type": "string" },
+            "amount": {
+              "type": "object",
+              "properties": {
+                "value": { "type": "string" },
+                "currency": { "type": "string" }
+              }
+            },
+            "referenceId": { "type": "string" }
+          }
+        },
+        "merkleProof": {
+          "type": "object",
+          "properties": {
+            "rootCredentialId": { "type": "string", "format": "uri" },
+            "leafHash": { "type": "string" },
+            "proofPath": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "merkleRoot": { "type": "string", "description": "Present on AgentActivityMerkleRoot type" },
+        "leafCount": { "type": "integer" },
+        "windowStart": { "type": "string", "format": "date-time" },
+        "windowEnd": { "type": "string", "format": "date-time" },
+        "activitySummary": {
+          "type": "object",
+          "properties": {
+            "by_type": { "type": "object", "additionalProperties": { "type": "integer" } },
+            "transaction_volume": {
+              "type": "object",
+              "properties": {
+                "value": { "type": "string" },
+                "currency": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "proof": {
+      "type": "object",
+      "required": ["type", "verificationMethod", "proofPurpose", "proofValue"],
+      "properties": {
+        "type": { "type": "string" },
+        "created": { "type": "string", "format": "date-time" },
+        "verificationMethod": { "type": "string" },
+        "proofPurpose": { "type": "string" },
+        "proofValue": { "type": "string" }
+      }
+    }
+  }
+}

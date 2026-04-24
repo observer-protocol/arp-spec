@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.observerprotocol.org/audit/v0.1/receipt-acknowledgment.json",
+  "title": "ReceiptAcknowledgment",
+  "description": "W3C Verifiable Credential schema for counterparty-signed acknowledgment of a receipt request.",
+  "type": "object",
+  "required": ["@context", "id", "type", "issuer", "validFrom", "credentialSubject", "proof"],
+  "additionalProperties": false,
+  "properties": {
+    "@context": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "type": "string" },
+      "contains": { "const": "https://schemas.observerprotocol.org/audit/v0.1" }
+    },
+    "id": { "type": "string", "format": "uri" },
+    "type": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "type": "string" },
+      "contains": { "const": "ReceiptAcknowledgment" }
+    },
+    "issuer": { "type": "string", "format": "uri" },
+    "validFrom": { "type": "string", "format": "date-time" },
+    "validUntil": { "type": "string", "format": "date-time" },
+    "credentialSchema": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "format": "uri" },
+        "type": { "type": "string" }
+      }
+    },
+    "credentialSubject": {
+      "type": "object",
+      "required": ["id", "inResponseToRequestId", "status"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "format": "uri", "description": "Agent DID" },
+        "inResponseToRequestId": { "type": "string", "format": "uri" },
+        "status": { "type": "string", "description": "received | pending | rejected" },
+        "deliveryMode": { "type": ["string", "null"], "description": "inline | webhook | poll" },
+        "expectedDeliveryWindow": { "type": ["string", "null"], "description": "ISO 8601 duration" },
+        "pollUrl": { "type": ["string", "null"], "format": "uri" },
+        "rejectReason": { "type": ["string", "null"] }
+      }
+    },
+    "proof": {
+      "type": "object",
+      "required": ["type", "verificationMethod", "proofPurpose", "proofValue"],
+      "properties": {
+        "type": { "type": "string" },
+        "created": { "type": "string", "format": "date-time" },
+        "verificationMethod": { "type": "string" },
+        "proofPurpose": { "type": "string" },
+        "proofValue": { "type": "string" }
+      }
+    }
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.observerprotocol.org/audit/v0.1/counterparty-receipt.json",
+  "title": "CounterpartyReceiptCredential",
+  "description": "W3C Verifiable Credential schema for counterparty-signed receipt of agent activity.",
+  "type": "object",
+  "required": ["@context", "id", "type", "issuer", "validFrom", "credentialSubject", "proof"],
+  "additionalProperties": false,
+  "properties": {
+    "@context": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "type": "string" },
+      "contains": { "const": "https://schemas.observerprotocol.org/audit/v0.1" }
+    },
+    "id": { "type": "string", "format": "uri" },
+    "type": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "type": "string" },
+      "contains": { "const": "CounterpartyReceiptCredential" }
+    },
+    "issuer": { "type": "string", "format": "uri" },
+    "validFrom": { "type": "string", "format": "date-time" },
+    "validUntil": { "type": "string", "format": "date-time" },
+    "credentialSchema": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "format": "uri" },
+        "type": { "type": "string" }
+      }
+    },
+    "credentialSubject": {
+      "type": "object",
+      "required": ["id", "activityType", "acknowledgmentType", "activityTimestamp"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "format": "uri", "description": "Agent DID (the counterparty's counterparty)" },
+        "activityType": { "type": "string" },
+        "acknowledgmentType": { "type": "string", "description": "observed | received | fulfilled" },
+        "activityTimestamp": { "type": "string", "format": "date-time" },
+        "transactionDetails": {
+          "type": "object",
+          "properties": {
+            "rail": { "type": "string" },
+            "amount": {
+              "type": "object",
+              "properties": {
+                "value": { "type": "string" },
+                "currency": { "type": "string" }
+              }
+            },
+            "referenceId": { "type": "string" }
+          }
+        },
+        "agentActivityCredentialId": { "type": ["string", "null"], "format": "uri" },
+        "inResponseToRequestId": { "type": ["string", "null"], "format": "uri" }
+      }
+    },
+    "proof": {
+      "type": "object",
+      "required": ["type", "verificationMethod", "proofPurpose", "proofValue"],
+      "properties": {
+        "type": { "type": "string" },
+        "created": { "type": "string", "format": "date-time" },
+        "verificationMethod": { "type": "string" },
+        "proofPurpose": { "type": "string" },
+        "proofValue": { "type": "string" }
+      }
+    }
+  }
+}
