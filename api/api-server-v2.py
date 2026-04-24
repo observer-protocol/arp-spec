@@ -125,6 +125,9 @@ from role_enforcement import require_role
 # Spec 3.8: SSO routes (SAML authentication)
 from sso_routes import router as sso_router, configure as configure_sso
 
+# Spec 3.4: Audit routes (compliance and audit trails)
+from audit_routes import router as audit_router, configure as configure_audit
+
 # Spec 3.3: Status list routes (revocation/suspension)
 from status_list_routes import router as status_list_router, configure as configure_status_lists
 
@@ -368,6 +371,26 @@ configure_sso(
     cookie_domain=os.environ.get("AT_COOKIE_DOMAIN", ".agenticterminal.io"),
 )
 app.include_router(sso_router)
+
+# ============================================================
+# SPEC 3.4: AUDIT ROUTES (Compliance & Audit Trails)
+# ============================================================
+def _verify_vc_for_audit(credential, resolve_did_fn):
+    try:
+        from vc_verification import verify_credential as vc_verify
+        result = vc_verify(credential, use_cache=True)
+        if result.get("verified"):
+            return True, "ok"
+        return False, result.get("error", "Verification failed")
+    except Exception as e:
+        return False, str(e)
+
+configure_audit(
+    get_db_connection_fn=get_db_connection,
+    resolve_did_fn=resolve_did,
+    verify_vc_signature_fn=_verify_vc_for_audit,
+)
+app.include_router(audit_router)
 
 @app.on_event("startup")
 def startup_event():
