@@ -135,6 +135,9 @@ from agent_profile_routes import router as profile_router, configure as configur
 # Spec 3.5: Policy engine routes
 from policy_routes import router as policy_router, configure as configure_policy
 from at_policy_engine import router as at_policy_router, configure as configure_at_policy
+
+# Spec 3.6: Counterparty Management
+from counterparty_routes import router as counterparty_router, configure as configure_counterparties
 from policy_client import consult_policy_engine, PolicyDecision
 
 # --- Spec 3.5: Policy consultation helper for write paths ---
@@ -467,6 +470,15 @@ configure_at_policy(
     op_api_base=os.environ.get("OP_BASE_URL", "https://api.agenticterminal.io"),
 )
 app.include_router(at_policy_router)
+
+# ============================================================
+# SPEC 3.6: COUNTERPARTY MANAGEMENT
+# ============================================================
+configure_counterparties(
+    get_db_connection_fn=get_db_connection,
+    validate_session_fn=validate_enterprise_session,
+)
+app.include_router(counterparty_router)
 
 @app.on_event("startup")
 def startup_event():
