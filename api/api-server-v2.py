@@ -132,6 +132,11 @@ from audit_routes import router as audit_router, configure as configure_audit
 # Spec 3.7: Agent Profile routes
 from agent_profile_routes import router as profile_router, configure as configure_profile
 
+# Spec 3.5: Policy engine routes
+from policy_routes import router as policy_router, configure as configure_policy
+from at_policy_engine import router as at_policy_router, configure as configure_at_policy
+from policy_client import consult_policy_engine, PolicyDecision
+
 # Spec 3.3: Status list routes (revocation/suspension)
 from status_list_routes import router as status_list_router, configure as configure_status_lists
 
@@ -404,6 +409,22 @@ configure_profile(
     validate_session_fn=validate_enterprise_session,
 )
 app.include_router(profile_router)
+
+# ============================================================
+# SPEC 3.5: POLICY ENGINE ROUTES
+# ============================================================
+configure_policy(
+    get_db_connection_fn=get_db_connection,
+    validate_session_fn=validate_enterprise_session,
+)
+app.include_router(policy_router)
+
+# AT Reference Policy Engine (MVP)
+configure_at_policy(
+    get_db_connection_fn=get_db_connection,
+    op_api_base=os.environ.get("OP_BASE_URL", "https://api.agenticterminal.io"),
+)
+app.include_router(at_policy_router)
 
 @app.on_event("startup")
 def startup_event():
