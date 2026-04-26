@@ -349,52 +349,79 @@ class PartnerRegistry:
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         try:
+            # partner_attestations schema (migration 003):
+            #   id, credential_id, credential_type, issuer_did, subject_did,
+            #   credential_jsonld, credential_url, valid_from, valid_until,
+            #   cached_at, last_verified_at
+            # Optional: extension_id (migration 015)
             query = """
                 SELECT
-                    pa.attestation_id,
+                    pa.id,
                     pa.credential_id,
-                    pa.claims,
-                    pa.issued_at,
-                    pa.expires_at,
-                    pa.attestation_hash,
-                    pr.partner_id,
-                    pr.partner_name,
-                    pr.partner_type,
-                    oa.agent_did
+                    pa.credential_type,
+                    pa.issuer_did,
+                    pa.subject_did,
+                    pa.credential_jsonld,
+                    pa.valid_from,
+                    pa.valid_until,
+                    pa.cached_at
                 FROM partner_attestations pa
-                JOIN vac_credentials vc ON vc.credential_id = pa.credential_id
-                JOIN partner_registry pr ON pr.partner_id = pa.partner_id
-                LEFT JOIN observer_agents oa ON oa.agent_id = vc.agent_id
-                WHERE vc.agent_id = %s
-                  AND vc.is_revoked = FALSE
+                WHERE pa.subject_did = (
+                    SELECT agent_did FROM observer_agents WHERE agent_id = %s LIMIT 1
+                )
+                  AND pa.valid_until > NOW()
             """
             params = [agent_id]
-            
+
             if partner_type:
-                query += " AND pr.partner_type = %s"
-                params.append(partner_type)
-            
-            query += " ORDER BY pa.issued_at DESC"
-            
+                query += " AND pa.credential_type ILIKE %s"
+                params.append(f"%{partner_type}%")
+
+            query += " ORDER BY pa.valid_from DESC"
+
             cursor.execute(query, params)
-            
+
             rows = cursor.fetchall()
             result_list = []
             for row in rows:
+                # Extract claims from credential_jsonld
+                claims = {}
+                cred_json = row['credential_jsonld']
+                if isinstance(cred_json, str):
+                    import json as _json
+                    cred_json = _json.loads(cred_json)
+                if isinstance(cred_json, dict):
+                    subject = cred_json.get('credentialSubject', {})
+                    claims = {k: v for k, v in subject.items() if k != 'id'}
+
+                # Derive partner info from issuer_did and credential_type
+                issuer = row['issuer_did'] or ''
+                partner_name = issuer.split(':')[-1] if ':' in issuer else issuer
+                partner_type_val = 'verifier'
+                ctype = (row['credential_type'] or '').lower()
+                if 'kyb' in ctype:
+                    partner_type_val = 'corpo'
+                elif 'compliance' in ctype:
+                    partner_type_val = 'verifier'
+                elif 'network' in ctype or 'membership' in ctype:
+                    partner_type_val = 'infrastructure'
+                elif 'extension' in ctype:
+                    partner_type_val = 'counterparty'
+
                 entry: Dict[str, Any] = {
-                    "attestation_id": str(row['attestation_id']),
-                    "credential_id": str(row['credential_id']) if row['credential_id'] else None,
-                    "partner_id": str(row['partner_id']),
-                    "partner_name": row['partner_name'],
-                    "partner_type": row['partner_type'],
-                    "claims": row['claims'],
-                    "issued_at": row['issued_at'].isoformat(),
-                    "attestation_hash": row['attestation_hash'],
+                    "attestation_id": str(row['id']),
+                    "credential_id": row['credential_id'],
+                    "partner_id": row['issuer_did'],
+                    "partner_name": partner_name,
+                    "partner_type": partner_type_val,
+                    "claims": claims,
+                    "issued_at": row['valid_from'].isoformat(),
+                    "attestation_hash": "",
                 }
-                if row['agent_did']:
-                    entry["agent_did"] = row['agent_did']
-                if row['expires_at']:
-                    entry["expires_at"] = row['expires_at'].isoformat()
+                if row.get('subject_did'):
+                    entry["agent_did"] = row['subject_did']
+                if row['valid_until']:
+                    entry["expires_at"] = row['valid_until'].isoformat()
                 result_list.append(entry)
             return result_list
             
