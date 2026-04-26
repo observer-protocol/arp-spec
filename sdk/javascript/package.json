@@ -1,0 +1,25 @@
+{
+  "name": "@observer-protocol/sdk",
+  "version": "0.1.0",
+  "description": "Observer Protocol SDK — agent identity, verification, and trust scoring",
+  "main": "index.js",
+  "module": "index.mjs",
+  "types": "index.d.ts",
+  "type": "module",
+  "keywords": ["observer-protocol", "agent", "did", "verifiable-credentials", "lightning", "bitcoin"],
+  "author": "Observer Protocol <dev@observerprotocol.org>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/observer-protocol/observer-protocol-spec"
+  },
+  "homepage": "https://observerprotocol.org",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "index.mjs",
+    "index.d.ts",
+    "README.md"
+  ]
+}
