@@ -1824,6 +1824,19 @@ def get_agent_transactions_public(agent_id: str, limit: int = 50):
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     try:
+        # Resolve agent aliases — Maxi has both 'maxi-0001' and 'd13cdfce...' IDs
+        # Query both the requested ID and any alias that shares the same agent_did
+        cursor.execute("""
+            SELECT agent_id FROM observer_agents
+            WHERE agent_id = %s
+               OR agent_did = (SELECT agent_did FROM observer_agents WHERE agent_id = %s LIMIT 1)
+        """, (agent_id, agent_id))
+        alias_rows = cursor.fetchall()
+        agent_ids = [r['agent_id'] for r in alias_rows] if alias_rows else [agent_id]
+        # Also include the literal requested ID in case it's not in observer_agents
+        if agent_id not in agent_ids:
+            agent_ids.append(agent_id)
+
         cursor.execute("""
             SELECT
                 ve.event_id,
@@ -1840,10 +1853,10 @@ def get_agent_transactions_public(agent_id: str, limit: int = 50):
                 ve.verified,
                 ve.created_at
             FROM verified_events ve
-            WHERE ve.agent_id = %s
+            WHERE ve.agent_id = ANY(%s)
             ORDER BY ve.created_at DESC
             LIMIT %s
-        """, (agent_id, limit,))
+        """, (agent_ids, limit,))
 
         events = []
         for r in cursor.fetchall():
