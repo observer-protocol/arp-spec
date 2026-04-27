@@ -6665,6 +6665,55 @@ async def get_cached_attestation(record_id: int):
 
 
 
+@app.get("/api/v1/attestations/by-issuer/{issuer_did:path}")
+def get_attestations_by_issuer(issuer_did: str, credential_type: Optional[str] = None):
+    """
+    Get all attestations issued by a given DID.
+    Used by Sovereign dashboard to find agents claimed by a principal.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    try:
+        if credential_type:
+            cursor.execute("""
+                SELECT id, credential_id, credential_type, issuer_did, subject_did,
+                       valid_from, valid_until, cached_at
+                FROM partner_attestations
+                WHERE issuer_did = %s AND credential_type = %s
+                ORDER BY cached_at DESC
+            """, (issuer_did, credential_type))
+        else:
+            cursor.execute("""
+                SELECT id, credential_id, credential_type, issuer_did, subject_did,
+                       valid_from, valid_until, cached_at
+                FROM partner_attestations
+                WHERE issuer_did = %s
+                ORDER BY cached_at DESC
+            """, (issuer_did,))
+
+        rows = cursor.fetchall()
+        attestations = []
+        for row in rows:
+            attestations.append({
+                "id": row["id"],
+                "credential_id": row["credential_id"],
+                "credential_type": row["credential_type"],
+                "issuer_did": row["issuer_did"],
+                "subject_did": row["subject_did"],
+                "valid_from": row["valid_from"].isoformat() if row["valid_from"] else None,
+                "valid_until": row["valid_until"].isoformat() if row["valid_until"] else None,
+                "cached_at": row["cached_at"].isoformat() if row["cached_at"] else None,
+            })
+
+        return {"attestations": attestations, "count": len(attestations)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to query attestations: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @app.get("/api/v1/attestations/{subject_did:path}")
 async def get_attestations(
     subject_did: str,
