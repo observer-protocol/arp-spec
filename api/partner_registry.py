@@ -399,7 +399,21 @@ class PartnerRegistry:
                 partner_name = issuer.split(':')[-1] if ':' in issuer else issuer
                 partner_type_val = 'verifier'
                 ctype = (row['credential_type'] or '').lower()
-                if 'kyb' in ctype:
+                if 'principal' in ctype:
+                    partner_type_val = 'principal'
+                    # Extract principal name from credential
+                    if isinstance(cred_json, dict):
+                        principal = cred_json.get('credentialSubject', {}).get('principal', {})
+                        if principal.get('name'):
+                            partner_name = principal['name']
+                elif 'delegation' in ctype:
+                    partner_type_val = 'delegation'
+                    # Extract issuer name from credential
+                    if isinstance(cred_json, dict):
+                        cred_issuer = cred_json.get('issuer', {})
+                        if isinstance(cred_issuer, dict) and cred_issuer.get('name'):
+                            partner_name = cred_issuer['name']
+                elif 'kyb' in ctype:
                     partner_type_val = 'corpo'
                 elif 'compliance' in ctype:
                     partner_type_val = 'verifier'
@@ -411,6 +425,7 @@ class PartnerRegistry:
                 entry: Dict[str, Any] = {
                     "attestation_id": str(row['id']),
                     "credential_id": row['credential_id'],
+                    "credential_type": row['credential_type'],
                     "partner_id": row['issuer_did'],
                     "partner_name": partner_name,
                     "partner_type": partner_type_val,
