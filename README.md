@@ -20,6 +20,35 @@ The protocol is defined in [AIP v0.5](docs/AIP_v0.5.md) (Agentic Identity Protoc
 
 ---
 
+## Install
+
+**Python:**
+```bash
+pip install observer-protocol
+```
+
+**JavaScript:**
+```bash
+npm install @observer-protocol/sdk
+```
+
+**6 lines to a verified agent:**
+```python
+from observer_protocol import ObserverClient
+
+client = ObserverClient()
+pub, priv = ObserverClient.generate_keypair()
+agent = client.register_agent(public_key=pub, agent_name="My Agent")
+challenge = client.request_challenge(agent.agent_id)
+sig = ObserverClient.sign_challenge(priv, challenge.nonce)
+client.verify_agent(agent.agent_id, sig)
+# → agent.agent_did = "did:web:observerprotocol.org:agents:..."
+```
+
+SDK docs: [Python](sdk/python/) | [JavaScript](sdk/javascript/) | [Developer Guide](docs/developer-guide/)
+
+---
+
 ## Protocol stack
 
 ```
