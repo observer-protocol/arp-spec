@@ -1592,7 +1592,39 @@ def submit_transaction(
         
         # Build canonical message and verify signature
         message = _build_transaction_message(agent_id, transaction_reference, protocol, timestamp)
-        is_valid = verify_signature(message, signature, public_key_hex)
+        from crypto_verification import verify_signature_simple, verify_ed25519_signature, detect_key_type
+        key_type = detect_key_type(public_key_hex)
+        is_valid = False
+        if key_type == 'secp256k1':
+            is_valid = verify_signature_simple(message, signature, public_key_hex)
+        elif key_type == 'ed25519':
+            is_valid = verify_ed25519_signature(message, signature, public_key_hex)
+
+        # If canonical message verification fails, try verifying against the full payload
+        # (the listener signs the full attestation JSON, not the canonical format)
+        if not is_valid and optional_metadata:
+            try:
+                import json as _json
+                full_payload = {
+                    "agent_id": agent_id,
+                    "protocol": protocol,
+                    "transaction_reference": transaction_reference,
+                    "timestamp": timestamp,
+                }
+                meta = _json.loads(optional_metadata)
+                full_payload.update({
+                    "preimage": meta.get("preimage"),
+                    "direction": meta.get("direction"),
+                    "amount_sats": meta.get("amount_sats"),
+                    "counterparty": meta.get("counterparty"),
+                    "memo": meta.get("memo"),
+                    "public_key": public_key_hex,
+                })
+                full_message = _json.dumps(full_payload).encode('utf-8')
+                if key_type == 'secp256k1':
+                    is_valid = verify_signature_simple(full_message, signature, public_key_hex)
+            except Exception:
+                pass
         
         if not is_valid:
             raise HTTPException(status_code=400, detail="Transaction signature verification failed")
