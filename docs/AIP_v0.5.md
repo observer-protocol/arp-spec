@@ -1,12 +1,20 @@
 # Agentic Identity Protocol (AIP)
 
-**Version:** 0.5 — Capability Consolidation
-**Date:** April 25, 2026
+**Version:** 0.5.1 — Capability Consolidation + Chargeback Prevention
+**Date:** April 27, 2026
 **Authors:** Boyd Cohen, Leo Bebchuk, Claude
 **Status:** Draft — Leo review incorporated, pending final sign-off
-**Supersedes:** AIP v0.3.1 (April 6, 2026)
+**Supersedes:** AIP v0.5 (April 25, 2026), AIP v0.3.1 (April 6, 2026)
 
 ---
+
+## Changelog (v0.5 → v0.5.1)
+
+| Change | Source | Status |
+|--------|--------|--------|
+| **Magic link package spec added.** Structured payload in soft-reject response for agent-as-courier delivery model. Agent forwards magic link to human via existing comms channel. | Chargeback prevention demo sprint | Spec |
+| **`no_delegation_credential` moved from `denial_reason` to `soft_reject_reason`.** Now a recoverable denial with remediation URL, not terminal. | Chargeback prevention demo sprint | Spec |
+| **`soft_reject_reason` registry added.** Separates recoverable denials (with magic link) from terminal denials. | Chargeback prevention demo sprint | Spec |
 
 ## Changelog (v0.3.1 → v0.5)
 
@@ -415,6 +423,34 @@ For the AT Verify flow, soft-rejected verdicts include a **remediation URL** —
 
 The proposed delegation scope in the JWT is a ceiling — the human can approve as-is, reduce scope, or reject. The human cannot increase scope beyond what the JWT proposes.
 
+### Magic link package (new in v0.5.1)
+
+The agent is the courier for the magic link — AT/Sovereign does not own the delivery channel. When a counterparty's verification stack returns a `soft_rejected` verdict with reason `no_delegation_credential`, the response includes a structured **magic link package** that the agent receives and forwards to its human via whatever communication channel that agent-human pair already uses (Telegram, WhatsApp, email, Discord, etc.).
+
+The magic link package in the soft-reject response body contains:
+
+```json
+{
+  "verdict": "soft_rejected",
+  "reason": "no_delegation_credential",
+  "magic_link": {
+    "url": "https://sovereign.agenticterminal.io/authorize?token=<signed-jwt>",
+    "intro": "I tried to purchase $50.00 in API credits from NeuralBridge and need your authorization. Tap here to approve:",
+    "transaction_context": {
+      "counterparty": "NeuralBridge",
+      "counterparty_did": "did:web:neuralbridge.ai",
+      "amount": "50.00",
+      "currency": "USDT",
+      "rail": "usdt-trc20",
+      "purchase_description": "GPU inference API credits (500 units)"
+    },
+    "expires_at": "2026-04-28T15:30:00Z"
+  }
+}
+```
+
+**Design rationale:** The agent-as-courier model avoids requiring AT to integrate with every communication platform. Agents already have established channels with their humans. AT provides the structured payload and the landing-page destination; the agent handles delivery. This also makes the agent an active participant in the authorization flow rather than a passive object — reinforcing the agent-as-actor mental model that the rest of the architecture depends on.
+
 ---
 
 ## 13. Verification and Testing
@@ -450,8 +486,15 @@ Canonical enumerated values enforced across all AIP implementations.
 ### `revocation_reason`
 `agent_compromised`, `agent_decommissioned`, `scope_violation`, `org_kyb_expired`, `org_kyb_revoked`, `org_offboarded`, `fraud_suspected`, `admin_override`
 
+### `soft_reject_reason`
+Recoverable denial reasons. The agent receives a magic link package and can retry after human authorization.
+
+`agent_not_verified`, `delegation_insufficient_scope`, `no_delegation_credential`
+
 ### `denial_reason`
-`score_below_threshold`, `no_delegation_credential`, `delegation_credential_expired`, `delegation_credential_revoked`, `scope_mismatch`, `counterparty_not_eligible`, `kyb_credential_missing`, `kyb_credential_expired`, `kyb_credential_revoked`, `did_resolution_failed`, `delegation_depth_exceeded`, `geographic_restriction`, `rail_not_permitted`
+Terminal denial reasons. No retry path.
+
+`score_below_threshold`, `delegation_credential_expired`, `delegation_credential_revoked`, `scope_mismatch`, `counterparty_not_eligible`, `kyb_credential_missing`, `kyb_credential_expired`, `kyb_credential_revoked`, `did_resolution_failed`, `delegation_depth_exceeded`, `geographic_restriction`, `rail_not_permitted`
 
 ### `policy_decision`
 `permit`, `deny`, `pending_approval`, `unavailable`, `signature_invalid`

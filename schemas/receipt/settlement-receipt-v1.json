@@ -1,0 +1,185 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://observerprotocol.org/schemas/receipt/settlement-receipt-v1.json",
+  "title": "Settlement Receipt Schema v1",
+  "description": "JSON Schema for cryptographic settlement receipts issued after authorized agent transactions. Receipts are independently verifiable W3C VCs that carry a reference to the delegation credential that authorized the transaction, enabling definitive dispute prevention. This is the first formal versioned receipt schema for the chargeback prevention flow.",
+  "type": "object",
+  "required": [
+    "@context",
+    "id",
+    "type",
+    "issuer",
+    "issuanceDate",
+    "credentialSubject",
+    "credentialSchema",
+    "proof"
+  ],
+  "properties": {
+    "@context": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "type": "string" },
+      "contains": { "enum": ["https://www.w3.org/ns/credentials/v2"] }
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^urn:uuid:",
+      "description": "Unique receipt identifier (UUID format)"
+    },
+    "type": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "type": "string" },
+      "contains": { "const": "VerifiableCredential" },
+      "description": "Must include VerifiableCredential and one of: SettlementReceipt, TronTransactionReceipt, LightningPaymentReceipt"
+    },
+    "issuer": {
+      "oneOf": [
+        { "type": "string", "pattern": "^did:" },
+        {
+          "type": "object",
+          "required": ["id"],
+          "properties": {
+            "id": { "type": "string", "pattern": "^did:" },
+            "name": { "type": "string" },
+            "orgAffiliation": { "type": "string" }
+          }
+        }
+      ],
+      "description": "DID of the entity issuing this receipt"
+    },
+    "issuanceDate": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expirationDate": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Receipt validity window (typically 7-30 days for verification purposes; the dispute-prevention value persists indefinitely)"
+    },
+    "credentialSubject": {
+      "type": "object",
+      "required": ["id", "transaction", "authorization"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^did:",
+          "description": "DID of the agent that executed the transaction"
+        },
+
+        "transaction": {
+          "type": "object",
+          "description": "Settlement transaction details",
+          "required": ["amount", "currency", "rail", "timestamp", "counterparty_did"],
+          "properties": {
+            "amount": {
+              "type": "string",
+              "description": "Settlement amount in human-readable form (e.g. '50.00')"
+            },
+            "currency": {
+              "type": "string",
+              "description": "ISO-4217 currency or asset code (e.g. 'USDT', 'BTC')"
+            },
+            "rail": {
+              "type": "string",
+              "description": "Settlement rail used (e.g. 'usdt-trc20', 'lightning')"
+            },
+            "timestamp": {
+              "type": "string",
+              "format": "date-time",
+              "description": "When settlement occurred"
+            },
+            "counterparty_did": {
+              "type": "string",
+              "pattern": "^did:",
+              "description": "DID of the counterparty (e.g. AI Infra Co.)"
+            },
+            "counterparty_name": {
+              "type": "string",
+              "description": "Human-readable counterparty name"
+            },
+            "transaction_hash": {
+              "type": "string",
+              "description": "On-chain transaction hash (for TRON) or payment hash (for Lightning)"
+            },
+            "purchase_description": {
+              "type": "string",
+              "description": "What was purchased (e.g. 'API credits')"
+            },
+            "rail_specific": {
+              "type": "object",
+              "description": "Rail-specific fields (TRON: sender/recipient addresses, token contract, confirmations, network; Lightning: preimage, bolt11, payee_node_pubkey)",
+              "additionalProperties": true
+            }
+          }
+        },
+
+        "authorization": {
+          "type": "object",
+          "description": "Reference to the delegation credential that authorized this transaction. This is the field that makes dispute prevention work: the receipt cryptographically proves which human authorized this specific transaction at which level.",
+          "required": ["delegationCredentialId", "authorizationLevel", "principal_did"],
+          "properties": {
+            "delegationCredentialId": {
+              "type": "string",
+              "description": "URI of the delegation credential that authorized this transaction (e.g. 'urn:uuid:delegation-abc123')"
+            },
+            "authorizationLevel": {
+              "type": "string",
+              "enum": ["one-time", "recurring", "policy"],
+              "description": "The authorization level the human selected when approving"
+            },
+            "principal_did": {
+              "type": "string",
+              "pattern": "^did:",
+              "description": "DID of the human principal who issued the authorization"
+            },
+            "authorized_at": {
+              "type": "string",
+              "format": "date-time",
+              "description": "When the human approved the authorization"
+            },
+            "scope_summary": {
+              "type": "string",
+              "description": "Human-readable summary of what was authorized (e.g. 'One-time purchase of $50.00 in API credits from NeuralBridge')"
+            },
+            "policy_version_hash": {
+              "type": "string",
+              "description": "SHA-256 hash of the internal policy document that was active when authorization was granted. Required for Level 3 (policy) receipts; optional for Level 1 and Level 2. Included now as an optional field to avoid schema migration when Level 3 receipts are issued in production."
+            }
+          }
+        }
+      }
+    },
+
+    "credentialSchema": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^https://observerprotocol.org/schemas/" },
+        "type": { "const": "JsonSchema" }
+      },
+      "description": "Reference to the JSON Schema that validates this receipt credential"
+    },
+    "proof": {
+      "type": "object",
+      "required": ["type", "created", "verificationMethod", "proofPurpose", "proofValue"],
+      "properties": {
+        "type": { "const": "Ed25519Signature2020" },
+        "created": { "type": "string", "format": "date-time" },
+        "verificationMethod": {
+          "type": "string",
+          "pattern": "^did:[a-z]+:.+#.+",
+          "description": "DID URL of the signing key. Verifiers resolve this to the issuer's DID Document to obtain the public key."
+        },
+        "proofPurpose": { "const": "assertionMethod" },
+        "proofValue": {
+          "type": "string",
+          "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
+          "description": "Multibase base58btc-encoded Ed25519 signature (z-prefixed)"
+        }
+      },
+      "description": "Ed25519Signature2020 proof. Verification requires only the receipt JSON and the issuer's published public key — no runtime dependency on AT's backend."
+    }
+  },
+  "additionalProperties": false
+}

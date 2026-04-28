@@ -1,0 +1,312 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://observerprotocol.org/schemas/delegation/v2.json",
+  "title": "Delegation Credential Schema v2",
+  "description": "JSON Schema for DelegationCredential Verifiable Credentials with three-level authorization model. Extends v1 with authorizationLevel and authorizationConfig. Backward compatible: v1 credentials remain valid; v2 adds required authorizationLevel field.",
+  "type": "object",
+  "required": [
+    "@context",
+    "id",
+    "type",
+    "issuer",
+    "validFrom",
+    "validUntil",
+    "credentialSubject",
+    "credentialSchema",
+    "proof"
+  ],
+  "properties": {
+    "@context": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "type": "string" },
+      "contains": { "enum": ["https://www.w3.org/ns/credentials/v2"] }
+    },
+    "id": { "type": "string", "format": "uri", "pattern": "^https://|^urn:uuid:" },
+    "type": {
+      "type": "array",
+      "minItems": 2,
+      "contains": { "const": "VerifiableCredential" }
+    },
+    "issuer": { "type": "string", "pattern": "^did:[a-z]+:.+" },
+    "validFrom": { "type": "string", "format": "date-time" },
+    "validUntil": { "type": "string", "format": "date-time" },
+    "credentialSubject": {
+      "type": "object",
+      "required": ["id", "actionScope", "delegationScope", "enforcementMode", "authorizationLevel"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^did:[a-z]+:.+" },
+
+        "authorizationLevel": {
+          "type": "string",
+          "enum": ["one-time", "recurring", "policy"],
+          "description": "Authorization scope granted by the principal. Level 1 (one-time) authorizes a single transaction. Level 2 (recurring) authorizes repeat transactions with one counterparty up to a ceiling. Level 3 (policy) references a broader standing policy."
+        },
+
+        "authorizationConfig": {
+          "type": "object",
+          "description": "Level-specific configuration. Exactly one of oneTime, recurring, or policy must be present, matching authorizationLevel. Enforced via if/then at the credentialSubject level.",
+          "properties": {
+            "oneTime": {
+              "type": "object",
+              "description": "Level 1: single-transaction authorization. The credential is consumed after one successful settlement.",
+              "properties": {
+                "counterparty_did": {
+                  "type": "string",
+                  "pattern": "^did:",
+                  "description": "DID of the specific counterparty for this transaction"
+                },
+                "amount": {
+                  "type": "string",
+                  "description": "Exact transaction amount (e.g. '50.00')"
+                },
+                "currency": {
+                  "type": "string",
+                  "description": "ISO-4217 currency or asset code (e.g. 'USD', 'USDT')"
+                },
+                "rail": {
+                  "type": "string",
+                  "description": "Settlement rail for this transaction (e.g. 'usdt-trc20', 'lightning')"
+                },
+                "execution_deadline": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "Credential expires if not used by this time. Short window (e.g. 15 minutes)."
+                },
+                "purchase_description": {
+                  "type": "string",
+                  "description": "Human-readable description of what is being purchased"
+                }
+              },
+              "required": ["counterparty_did", "amount", "currency", "rail"]
+            },
+
+            "recurring": {
+              "type": "object",
+              "description": "Level 2: counterparty-scoped recurring authorization. Authorizes future transactions with one specific counterparty up to a ceiling per period.",
+              "properties": {
+                "counterparty_did": {
+                  "type": "string",
+                  "pattern": "^did:",
+                  "description": "DID of the specific counterparty"
+                },
+                "ceiling_amount": {
+                  "type": "string",
+                  "description": "Maximum aggregate spend per period (e.g. '500.00')"
+                },
+                "ceiling_currency": {
+                  "type": "string",
+                  "description": "ISO-4217 currency for ceiling"
+                },
+                "per_transaction_max": {
+                  "type": "string",
+                  "description": "Optional per-transaction cap within the ceiling"
+                },
+                "period": {
+                  "type": "string",
+                  "description": "ISO-8601 duration for ceiling reset (e.g. 'P30D' for monthly)"
+                },
+                "valid_until": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "When this recurring authorization expires entirely"
+                },
+                "allowed_rails": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Rails permitted for recurring transactions with this counterparty"
+                }
+              },
+              "required": ["counterparty_did", "ceiling_amount", "ceiling_currency", "period"]
+            },
+
+            "policy": {
+              "type": "object",
+              "description": "Level 3: broader standing policy. The policy_id references an internal policy document stored in Sovereign. Counterparties see only the policy_id and the external credential fields — never the full policy logic.",
+              "properties": {
+                "policy_id": {
+                  "type": "string",
+                  "description": "Reference to the internal policy document in Sovereign"
+                },
+                "rail_preference": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Priority-ordered rail preference list. First match against counterparty's accepted rails wins. E.g. ['usdt-trc20', 'lightning'] means prefer USDT, fall back to Lightning."
+                },
+                "per_rail_caps": {
+                  "type": "object",
+                  "description": "Per-rail spending caps. Keys are rail identifiers.",
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "per_transaction": { "type": "string", "description": "Max per single transaction on this rail" },
+                      "aggregate": { "type": "string", "description": "Max aggregate spend on this rail per period" },
+                      "period": { "type": "string", "description": "ISO-8601 duration for aggregate reset" },
+                      "currency": { "type": "string" }
+                    }
+                  }
+                },
+                "escalation_threshold": {
+                  "type": "object",
+                  "description": "Transactions above this amount trigger human notification before execution",
+                  "properties": {
+                    "amount": { "type": "string" },
+                    "currency": { "type": "string" }
+                  }
+                },
+                "fallback_rules": {
+                  "type": "array",
+                  "description": "Conditional rail selection rules evaluated in order",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "condition": { "type": "string", "description": "Condition expression (e.g. 'usdt_balance < amount')" },
+                      "then_rail": { "type": "string", "description": "Rail to use if condition is true" }
+                    },
+                    "required": ["condition", "then_rail"]
+                  }
+                },
+                "time_windows": {
+                  "type": "object",
+                  "description": "Aggregate caps per time window across all counterparties",
+                  "properties": {
+                    "daily": { "type": "object", "properties": { "amount": { "type": "string" }, "currency": { "type": "string" } } },
+                    "weekly": { "type": "object", "properties": { "amount": { "type": "string" }, "currency": { "type": "string" } } },
+                    "monthly": { "type": "object", "properties": { "amount": { "type": "string" }, "currency": { "type": "string" } } }
+                  }
+                }
+              },
+              "required": ["policy_id", "rail_preference"]
+            }
+          }
+        },
+
+        "actionScope": {
+          "type": "object",
+          "description": "External action scope visible to counterparties for cryptographic verification. Counterparties verify the agent is authorized within these bounds.",
+          "properties": {
+            "allowed_rails": { "type": "array", "items": { "type": "string" } },
+            "allowed_counterparty_types": { "type": "array", "items": { "type": "string" } },
+            "per_transaction_ceiling": {
+              "type": "object",
+              "properties": {
+                "amount": { "type": "string" },
+                "currency": { "type": "string" }
+              }
+            },
+            "cumulative_ceiling": {
+              "type": "object",
+              "properties": {
+                "amount": { "type": "string" },
+                "currency": { "type": "string" },
+                "period": { "type": "string" }
+              }
+            },
+            "geographic_restriction": {
+              "type": "object",
+              "properties": {
+                "allowed": { "type": "array", "items": { "type": "string" } },
+                "disallowed": { "type": "array", "items": { "type": "string" } }
+              }
+            },
+            "allowed_merchant_categories": { "type": "array", "items": { "type": "string" } },
+            "allowed_transaction_categories": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "delegationScope": {
+          "type": "object",
+          "required": ["may_delegate_further"],
+          "properties": {
+            "may_delegate_further": { "type": "boolean" },
+            "max_child_action_scope": { "type": "object" },
+            "may_delegate_delegation_authority": { "type": "boolean" },
+            "allowed_child_subject_types": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "acl": {
+          "type": "object",
+          "properties": {
+            "revocation_authority": { "type": "array", "items": { "type": "string", "pattern": "^did:" } },
+            "modification_authority": { "type": "array", "items": { "type": "string", "pattern": "^did:" } }
+          }
+        },
+        "enforcementMode": { "type": "string", "enum": ["protocol_native", "pre_transaction_check"] },
+        "parentDelegationId": { "type": ["string", "null"], "format": "uri" },
+        "kybCredentialId": { "type": ["string", "null"], "format": "uri" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "authorizationLevel": { "const": "one-time" } } },
+          "then": {
+            "properties": {
+              "authorizationConfig": {
+                "required": ["oneTime"],
+                "properties": { "recurring": false, "policy": false }
+              }
+            },
+            "required": ["authorizationConfig"]
+          }
+        },
+        {
+          "if": { "properties": { "authorizationLevel": { "const": "recurring" } } },
+          "then": {
+            "properties": {
+              "authorizationConfig": {
+                "required": ["recurring"],
+                "properties": { "oneTime": false, "policy": false }
+              }
+            },
+            "required": ["authorizationConfig"]
+          }
+        },
+        {
+          "if": { "properties": { "authorizationLevel": { "const": "policy" } } },
+          "then": {
+            "properties": {
+              "authorizationConfig": {
+                "required": ["policy"],
+                "properties": { "oneTime": false, "recurring": false }
+              }
+            },
+            "required": ["authorizationConfig"]
+          }
+        }
+      ]
+    },
+    "credentialSchema": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^https://observerprotocol.org/schemas/" },
+        "type": { "const": "JsonSchema" }
+      }
+    },
+    "credentialStatus": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "statusPurpose", "statusListIndex", "statusListCredential"],
+        "properties": {
+          "id": { "type": "string", "format": "uri" },
+          "type": { "type": "string", "const": "BitstringStatusListEntry" },
+          "statusPurpose": { "type": "string", "enum": ["revocation", "suspension"] },
+          "statusListIndex": { "type": "string", "pattern": "^[0-9]+$" },
+          "statusListCredential": { "type": "string", "format": "uri" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "proof": {
+      "type": "object",
+      "required": ["type", "created", "verificationMethod", "proofPurpose", "proofValue"],
+      "properties": {
+        "type": { "const": "Ed25519Signature2020" },
+        "created": { "type": "string", "format": "date-time" },
+        "verificationMethod": { "type": "string", "pattern": "^did:[a-z]+:.+#.+" },
+        "proofPurpose": { "const": "assertionMethod" },
+        "proofValue": { "type": "string", "pattern": "^[1-9A-HJ-NP-Za-km-z]+$" }
+      }
+    }
+  },
+  "additionalProperties": false
+}
