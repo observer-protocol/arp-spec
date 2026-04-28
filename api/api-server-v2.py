@@ -1869,7 +1869,8 @@ def get_agent_transactions_public(agent_id: str, limit: int = 50):
                 ve.preimage,
                 ve.counterparty_id,
                 ve.verified,
-                ve.created_at
+                ve.created_at,
+                ve.metadata
             FROM verified_events ve
             WHERE ve.agent_id = ANY(%s)
             ORDER BY ve.created_at DESC
