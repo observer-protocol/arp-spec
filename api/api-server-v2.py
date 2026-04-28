@@ -141,6 +141,9 @@ from counterparty_routes import router as counterparty_router, configure as conf
 
 # Spec 3.2: Delegation verification
 from delegation_routes import router as delegation_verify_router, configure as configure_delegation_verify
+
+# AIP v0.5.1: Remediation (magic link) routes
+from remediation_routes import router as remediation_router, configure as configure_remediation
 from policy_client import consult_policy_engine, PolicyDecision
 
 # --- Spec 3.5: Policy consultation helper for write paths ---
@@ -393,7 +396,8 @@ _default_origins = (
     "https://observerprotocol.org,"
     "https://www.observerprotocol.org,"
     "https://agenticterminal.ai,"
-    "https://www.agenticterminal.ai,https://agenticterminal.io,https://www.agenticterminal.io,https://app.agenticterminal.io"
+    "https://www.agenticterminal.ai,https://agenticterminal.io,https://www.agenticterminal.io,https://app.agenticterminal.io,"
+    "https://sovereign.agenticterminal.io,http://localhost:3000"
 )
 _allowed_origins = [
     o.strip()
@@ -491,7 +495,14 @@ configure_delegation_verify(
     resolve_did_fn=resolve_did,
 )
 app.include_router(delegation_verify_router)
-=======
+
+# ============================================================
+# AIP v0.5.1: REMEDIATION (magic link) ROUTES
+# ============================================================
+configure_remediation(get_db_connection_fn=get_db_connection)
+app.include_router(remediation_router)
+
+# =======
 # ── AT Verify endpoints (Phase 1B) ────────────────────────────
 try:
     from verify_endpoints import router as verify_router

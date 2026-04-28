@@ -55,7 +55,21 @@
 
 **Actor:** NeuralBridge verification stack
 
-NeuralBridge's verification stack checks for a delegation credential. None present. Returns AIP-shaped soft-reject:
+NeuralBridge's verification stack checks for a delegation credential. None present.
+
+**Magic link assembly sequence:**
+
+1. Agent (Maxi) calls NeuralBridge's purchase endpoint (Beat 1 above)
+2. NeuralBridge determines no delegation credential → calls OP's magic link generation API:
+   ```
+   POST https://api.observerprotocol.org/api/v1/remediation/magic-link
+   Body: { agent_id, counterparty_did, counterparty_name, amount, currency, rail, purchase_description }
+   ```
+3. OP generates a signed JWT (EdDSA/Ed25519, 15-minute TTL, single-use JTI) and returns the structured magic link package
+4. NeuralBridge wraps the package into its AIP-shaped `soft_rejected` response
+5. NeuralBridge returns the AIP response to the agent
+
+The end-state response payload the agent receives:
 
 ```json
 {
@@ -77,7 +91,7 @@ NeuralBridge's verification stack checks for a delegation credential. None prese
 }
 ```
 
-Maxi receives the soft-reject and forwards the magic link to Boyd via her configured human-comms channel. The message Boyd sees:
+Maxi receives the soft-reject and forwards the magic link to Boyd via her configured human-comms channel. The `intro` field is a default message the agent can forward verbatim or adapt for its specific comms style — the agent owns delivery. The message Boyd sees:
 
 > I tried to purchase $50.00 in GPU inference API credits from NeuralBridge and need your authorization.
 >
