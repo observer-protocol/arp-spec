@@ -51,11 +51,11 @@ async function main() {
   // Step 2: Make inference call via x402
   console.log('Step 1: Making inference call to Hyperbolic via x402...');
   const requestBody = {
-    model: 'meta-llama/Llama-3.2-3B-Instruct',
+    model: 'meta-llama/Meta-Llama-3.1-405B-Instruct',
     messages: [
       { role: 'user', content: 'What is Observer Protocol? Answer in one sentence.' }
     ],
-    max_tokens: 100,
+    max_tokens: 512,
     temperature: 0.1,
     stream: false,
   };
