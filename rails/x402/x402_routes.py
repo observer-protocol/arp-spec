@@ -112,7 +112,7 @@ def verify_x402_payment(req: X402VerifyRequest):
             req.settlement_tx_hash,
             datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             _classify_amount(req.amount, req.asset_symbol),
-            int(req.amount) if req.amount.isdigit() else 0,
+            0,  # amount_sats is 0 for x402 — actual amount is in metadata.amount_usdc
             "outbound",
             True,
             json.dumps({
