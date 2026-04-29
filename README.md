@@ -14,9 +14,12 @@ Agents need portable, verifiable identity. Observer Protocol provides it:
 - **Delegation** — A human or organization cryptographically authorizes an agent to act within a defined scope (spending limits, counterparty restrictions, time windows, rail restrictions).
 - **Attestation** — Third parties issue signed credentials about agents (KYB status, compliance facts, reputation scores). Issuer-direct signing — no intermediary.
 - **Verification** — A single API call checks: is this agent authorized for this transaction? Returns a signed W3C Verifiable Credential receipt, independently verifiable by any party.
-- **Chain verification** — Verify that a payment actually occurred on Lightning, TRON, or Stacks, with chain-specific evidence models.
+- **Chain verification** — Verify that a payment actually occurred on Lightning, TRON, x402 (USDC on Base), or Solana, with chain-specific evidence models.
+- **Chargeback prevention** — Cryptographic settlement receipts that definitively prove a human authorized an agent transaction. The receipt is the dispute resolution regime.
 
-The protocol is defined in [AIP v0.5](docs/AIP_v0.5.md) (Agentic Identity Protocol). The architecture is documented in [Build Principles](docs/OP-AT-BUILD-PRINCIPLES.md).
+The protocol is defined in [AIP v0.5.1](docs/AIP_v0.5.md) (Agentic Identity Protocol). The architecture is documented in [Build Principles](docs/OP-AT-BUILD-PRINCIPLES.md).
+
+**New: [Chargeback Prevention Demo](https://observerprotocol.org/chargeback-prevention)** — end-to-end demo of cryptographic chargeback prevention for AI infrastructure companies.
 
 ---
 
@@ -60,22 +63,25 @@ SDK docs: [Python](sdk/python/) | [JavaScript](sdk/javascript/) | [Developer Gui
 ├─────────────────────────────────────────┤
 │    OP — Observer Protocol               │  DIDs, VAC, schemas, status lists
 ├─────────────────────────────────────────┤
-│        Settlement Rails                 │  Lightning, TRON, Stacks, x402
+│        Settlement Rails                 │  x402, Lightning, TRON, Solana
 └─────────────────────────────────────────┘
 ```
 
 ---
 
-## Chain support
+## Rail support
 
-| Rail | Status | Verification model |
-|------|--------|--------------------|
-| **Lightning** | Live | Three-tier: payee attestation, LND node query, preimage. Payer/payee asymmetry handled. |
-| **TRON** | Live | TronGrid verification. TRC-20 USDT mainnet. |
-| **Stacks** | Stub | Interface defined. Ready for integration. |
-| **Solana** | Live | SOL + SPL token transfers. Ed25519 verification. |
+| Rail | Status | Verification model | Credential type |
+|------|--------|--------------------|-----------------| 
+| **x402 (USDC on Base)** | **Live** | Dual verification: Coinbase facilitator + Base RPC on-chain. Discrepancies surfaced, not hidden. | `X402PaymentCredential` |
+| **Lightning** | Live | Three-tier: payee attestation, LND node query, preimage. Payer/payee asymmetry handled. | `LightningPaymentReceipt` |
+| **TRON (USDT)** | Live | TronGrid + on-chain TRC-20 verification. Mainnet. | `TronTransactionReceipt` |
+| **Solana** | Live | SOL + SPL token transfers. Ed25519 verification. | `SolanaPaymentCredential` |
+| **Stacks** | Stub | Interface defined. Ready for integration. | — |
 
-Adding a chain means implementing one `ChainAdapter` — no protocol changes required.
+**x402 reference integration:** Verified Hyperbolic inference payment on Base mainnet. [Schema](https://observerprotocol.org/schemas/x402/v1.json) | [Demo script](rails/x402/demo_hyperbolic.mjs)
+
+Adding a rail means implementing one adapter — no protocol changes required.
 
 ---
 
@@ -224,15 +230,18 @@ observer-protocol/
 │   ├── Spec-3.2-*.md             # Delegation credentials
 │   ├── Spec-3.3-*.md             # Revocation and lifecycle
 │   └── OP-AT-BUILD-PRINCIPLES.md # Architecture decisions
-├── schemas/                      # W3C JSON Schema definitions
-│   ├── delegation/v1.json
+├── schemas/                      # W3C JSON Schema definitions (live at observerprotocol.org/schemas/)
+│   ├── delegation/v2.json        # Three-level delegation credential
+│   ├── receipt/settlement-receipt-v1.json  # Chargeback prevention receipt
+│   ├── x402/v1.json              # X402PaymentCredential
 │   ├── audit/v0.1/               # Audit credential schemas
 │   ├── kyb-attestation/v2.json
 │   └── ...
 ├── rails/                        # Settlement rail implementations
+│   ├── x402/                     # x402 (USDC on Base) — dual verification + 8004 hooks
 │   ├── tron/                     # TRON mainnet (TRC-20 USDT)
 │   └── solana/                   # Solana (SOL + SPL tokens)
-├── migrations/                   # Database migrations (001–015)
+├── migrations/                   # Database migrations (001–018)
 ├── DEPLOYMENT-LOG.md             # Production deployment history
 └── WHITEPAPER.md                 # Protocol vision (v1.0)
 ```
@@ -282,11 +291,24 @@ A sandbox environment for integration testing is available with fixture data, de
 
 ---
 
+## Schemas (live at observerprotocol.org)
+
+| Schema | URL | Purpose |
+|--------|-----|---------|
+| Delegation v2 | [schemas/delegation/v2.json](https://observerprotocol.org/schemas/delegation/v2.json) | Three-level delegation credentials (one-time, recurring, policy) |
+| Settlement Receipt v1 | [schemas/receipt/settlement-receipt-v1.json](https://observerprotocol.org/schemas/receipt/settlement-receipt-v1.json) | Chargeback prevention receipts with authorization reference |
+| X402 Payment v1 | [schemas/x402/v1.json](https://observerprotocol.org/schemas/x402/v1.json) | x402 payment attestation with dual verification |
+| OP DID Document | [.well-known/did.json](https://observerprotocol.org/.well-known/did.json) | Observer Protocol's Ed25519 public key |
+
+All schema `$id` URLs resolve to the live files. All credentials are independently verifiable via standard `did:web` resolution.
+
+---
+
 ## Documentation
 
 | Document | Purpose |
 |----------|---------|
-| [AIP v0.5](docs/AIP_v0.5.md) | Protocol specification (current) |
+| [AIP v0.5.1](docs/AIP_v0.5.md) | Protocol specification (current) |
 | [Whitepaper](WHITEPAPER.md) | Protocol vision and economics |
 | [Build Principles](docs/OP-AT-BUILD-PRINCIPLES.md) | Architecture decisions |
 | [Spec 3.1](docs/Spec-3.1-Third-Party-Attestations-v0.2.md) | Attestation credential spec |
@@ -294,6 +316,9 @@ A sandbox environment for integration testing is available with fixture data, de
 | [Spec 3.3](docs/Spec-3.3-Revocation-and-Lifecycle-v0.1.md) | Revocation and lifecycle spec |
 | [REPO_MAP](REPO_MAP.md) | Repository navigation guide |
 | [DEPLOYMENT-LOG](DEPLOYMENT-LOG.md) | Production deployment history |
+| [Chargeback Demo](https://observerprotocol.org/chargeback-prevention) | End-to-end chargeback prevention demo |
+| [Demo Runbook](docs/demos/chargeback-demo-flow.md) | Beat-by-beat technical runbook |
+| [x402 Rail Adapter](rails/x402/) | x402 (USDC on Base) verification + 8004 hooks |
 
 ---
 
