@@ -156,6 +156,14 @@ try:
     _x402_available = True
 except ImportError:
     _x402_available = False
+
+# ERC-8004 / TRC-8004 integration
+_sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'rails', 'erc8004'))
+try:
+    from erc8004_routes import router as erc8004_router, configure as configure_erc8004
+    _erc8004_available = True
+except ImportError:
+    _erc8004_available = False
 from policy_client import consult_policy_engine, PolicyDecision
 
 # --- Spec 3.5: Policy consultation helper for write paths ---
@@ -528,6 +536,14 @@ if _x402_available:
     configure_x402(get_db_connection_fn=get_db_connection)
     app.include_router(x402_router)
     print("x402 rail adapter mounted: /api/v1/x402/*")
+
+# ============================================================
+# ERC-8004 / TRC-8004 INTEGRATION
+# ============================================================
+if _erc8004_available:
+    configure_erc8004(get_db_connection_fn=get_db_connection)
+    app.include_router(erc8004_router)
+    print("ERC-8004 routes mounted: /api/v1/erc8004/*")
 
 # =======
 # ── AT Verify endpoints (Phase 1B) ────────────────────────────
