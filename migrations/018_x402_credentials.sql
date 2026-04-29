@@ -24,5 +24,8 @@ CREATE INDEX idx_x402_network ON x402_credentials(network);
 CREATE INDEX idx_x402_tx_hash ON x402_credentials(settlement_tx_hash);
 CREATE INDEX idx_x402_created ON x402_credentials(created_at DESC);
 
--- Add caip10_identifiers to observer_agents for 8004 forward compatibility (Hook 1)
+-- Add caip10_identifiers to observer_agents for 8004 forward compatibility (Hook 1).
+-- CAIP-10 is the bridge format for on-chain registries, not a replacement for did:web.
+-- did:web remains canonical OP identity. These are per-agent wallet anchors for
+-- interacting with 8004 contracts that expect wallet address format.
 ALTER TABLE observer_agents ADD COLUMN IF NOT EXISTS caip10_identifiers JSONB DEFAULT '[]'::jsonb;

@@ -28,12 +28,14 @@ def agent_to_caip10(
     """
     Express an agent identity as a CAIP-10 account identifier.
 
+    CAIP-10 is the bridge format for on-chain registries, not a replacement
+    for did:web. did:web remains canonical OP identity. CAIP-10 identifiers
+    are per-agent wallet anchors stored for the purpose of interacting with
+    8004 contracts that expect wallet address format.
+
     Examples:
       eip155:8453:0xabc...  (Base mainnet)
       tron:mainnet:Tabc...  (TRON mainnet)
-
-    This becomes the ERC-721 token owner address when Phase 2
-    mints the agent's 8004 Identity NFT.
     """
     return f"{chain_namespace}:{chain_reference}:{account_address}"
 
@@ -77,9 +79,12 @@ def generate_8004_registration_file(
     x402Support is true ONLY when the agent has at least one issued
     X402PaymentCredential (claim of fact, not claim of capability).
 
+    References the canonical ERC-8004 spec and M2M Registry contracts
+    (BofAI deployment) for TRC-8004 on TRON. No AINFT SDK dependency.
+
     This file is NOT published to IPFS or uploaded to any registry
-    in Phase 1. It exists as a generator. Phase 2 will pin it and
-    reference it from on-chain registrations.
+    in Phase 1. Phase 2 will pin it and reference it from on-chain
+    registrations (OP as validator on Base's Validation Registry).
     """
     services = [
         {
