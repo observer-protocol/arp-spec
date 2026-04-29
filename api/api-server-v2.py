@@ -147,6 +147,15 @@ from remediation_routes import router as remediation_router, short_router as sho
 
 # Phase 3: NeuralBridge demo counterparty
 from demo_neuralbridge import router as neuralbridge_router, configure as configure_neuralbridge
+
+# x402 rail adapter
+import sys as _sys
+_sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'rails', 'x402'))
+try:
+    from x402_routes import router as x402_router, configure as configure_x402
+    _x402_available = True
+except ImportError:
+    _x402_available = False
 from policy_client import consult_policy_engine, PolicyDecision
 
 # --- Spec 3.5: Policy consultation helper for write paths ---
@@ -511,6 +520,14 @@ app.include_router(short_url_router)
 # ============================================================
 configure_neuralbridge(get_db_connection_fn=get_db_connection)
 app.include_router(neuralbridge_router)
+
+# ============================================================
+# x402 RAIL ADAPTER
+# ============================================================
+if _x402_available:
+    configure_x402(get_db_connection_fn=get_db_connection)
+    app.include_router(x402_router)
+    print("x402 rail adapter mounted: /api/v1/x402/*")
 
 # =======
 # ── AT Verify endpoints (Phase 1B) ────────────────────────────

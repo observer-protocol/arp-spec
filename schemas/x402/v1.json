@@ -1,0 +1,171 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://observerprotocol.org/schemas/x402/v1.json",
+  "title": "X402 Payment Credential Schema v1",
+  "description": "W3C Verifiable Credential schema for x402-mediated payments. Issued by Observer Protocol after verifying both Coinbase facilitator attestation and on-chain USDC settlement on Base (or other x402-supported chain). Dual verification: facilitator endpoint as primary, Base RPC as ground truth.",
+  "type": "object",
+  "required": [
+    "@context",
+    "id",
+    "type",
+    "issuer",
+    "validFrom",
+    "validUntil",
+    "credentialSubject",
+    "credentialSchema",
+    "proof"
+  ],
+  "properties": {
+    "@context": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "type": "string" },
+      "contains": { "enum": ["https://www.w3.org/ns/credentials/v2"] }
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^urn:uuid:",
+      "description": "Unique credential identifier"
+    },
+    "type": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "type": "string" },
+      "allOf": [
+        { "contains": { "const": "VerifiableCredential" } },
+        { "contains": { "const": "X402PaymentCredential" } }
+      ]
+    },
+    "issuer": {
+      "type": "string",
+      "pattern": "^did:",
+      "description": "OP's issuer DID (did:web:observerprotocol.org)"
+    },
+    "validFrom": { "type": "string", "format": "date-time" },
+    "validUntil": { "type": "string", "format": "date-time" },
+    "credentialSubject": {
+      "type": "object",
+      "required": [
+        "id",
+        "counterparty",
+        "paymentScheme",
+        "network",
+        "asset",
+        "amount",
+        "resource",
+        "facilitator",
+        "settlementTxHash",
+        "paymentPayloadHash"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^did:",
+          "description": "The payer agent's DID"
+        },
+        "counterparty": {
+          "type": "string",
+          "description": "DID or address of the resource provider (the x402 server)"
+        },
+        "paymentScheme": {
+          "type": "string",
+          "description": "The x402 payment scheme name (e.g. 'exact')",
+          "examples": ["exact"]
+        },
+        "network": {
+          "type": "string",
+          "description": "CAIP-2 chain identifier for the settlement chain",
+          "examples": ["eip155:8453", "eip155:1", "eip155:84532"]
+        },
+        "asset": {
+          "type": "object",
+          "required": ["address", "symbol"],
+          "properties": {
+            "address": {
+              "type": "string",
+              "description": "Token contract address on the settlement chain"
+            },
+            "symbol": {
+              "type": "string",
+              "description": "Token symbol (e.g. USDC)"
+            }
+          }
+        },
+        "amount": {
+          "type": "string",
+          "description": "Payment amount in atomic units (e.g. '1000000' for 1 USDC with 6 decimals). String to avoid float precision issues."
+        },
+        "resource": {
+          "type": "string",
+          "format": "uri",
+          "description": "The URI of the resource paid for (the x402 protected endpoint)"
+        },
+        "facilitator": {
+          "type": "string",
+          "format": "uri",
+          "description": "The x402 facilitator endpoint that settled the payment (e.g. Coinbase's facilitator URL)"
+        },
+        "settlementTxHash": {
+          "type": "string",
+          "description": "On-chain transaction hash of the USDC settlement on the target chain"
+        },
+        "paymentPayloadHash": {
+          "type": "string",
+          "description": "SHA-256 hash of the original signed x402 payment payload, for non-repudiation"
+        },
+        "verification": {
+          "type": "object",
+          "description": "Dual verification results. OP verifies both facilitator attestation and on-chain settlement independently.",
+          "properties": {
+            "facilitator_verified": {
+              "type": "boolean",
+              "description": "Whether the Coinbase facilitator endpoint confirmed the payment"
+            },
+            "onchain_verified": {
+              "type": "boolean",
+              "description": "Whether direct Base RPC query confirmed the USDC transfer on-chain"
+            },
+            "onchain_confirmations": {
+              "type": "integer",
+              "description": "Number of block confirmations at verification time"
+            },
+            "discrepancy": {
+              "type": "boolean",
+              "description": "True if facilitator and on-chain results disagree. OP surfaces this rather than hiding it.",
+              "default": false
+            }
+          }
+        },
+        "agentId": {
+          "type": "string",
+          "description": "Raw agent identifier (OP internal)"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp of the x402 payment"
+        }
+      }
+    },
+    "credentialSchema": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^https://observerprotocol.org/schemas/" },
+        "type": { "const": "JsonSchema" }
+      }
+    },
+    "proof": {
+      "type": "object",
+      "required": ["type", "created", "verificationMethod", "proofPurpose", "proofValue"],
+      "properties": {
+        "type": { "const": "Ed25519Signature2020" },
+        "created": { "type": "string", "format": "date-time" },
+        "verificationMethod": { "type": "string", "pattern": "^did:[a-z]+:.+#.+" },
+        "proofPurpose": { "const": "assertionMethod" },
+        "proofValue": { "type": "string", "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$" }
+      }
+    }
+  },
+  "additionalProperties": false
+}

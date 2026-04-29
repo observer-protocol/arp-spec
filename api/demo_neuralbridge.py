@@ -302,7 +302,7 @@ def get_payment_config():
         "counterparty_did": NEURALBRIDGE_DID,
         "counterparty_name": NEURALBRIDGE_NAME,
         "tagline": "GPU inference at the edge",
-        "accepted_rails": ["usdt-trc20", "lightning"],
+        "accepted_rails": ["usdt-trc20", "lightning", "x402-usdc-base"],
         "products": list(PRODUCTS.values()),
     }
 
