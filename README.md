@@ -61,6 +61,9 @@ SDK docs: [Python](sdk/python/) | [JavaScript](sdk/javascript/) | [Developer Gui
 │      AIP — Agentic Identity Protocol    │  Delegation, attestation, audit,
 │                                         │  revocation, policy consultation
 ├─────────────────────────────────────────┤
+│   ERC-8004 / TRC-8004 On-Chain Registry │  Agent identity + reputation NFTs,
+│                                         │  cross-chain registry resolution
+├─────────────────────────────────────────┤
 │    OP — Observer Protocol               │  DIDs, VAC, schemas, status lists
 ├─────────────────────────────────────────┤
 │        Settlement Rails                 │  x402, Lightning, TRON, Solana
@@ -82,6 +85,30 @@ SDK docs: [Python](sdk/python/) | [JavaScript](sdk/javascript/) | [Developer Gui
 **x402 reference integration:** Verified Hyperbolic inference payment on Base mainnet. [Schema](https://observerprotocol.org/schemas/x402/v1.json) | [Demo script](rails/x402/demo_hyperbolic.mjs)
 
 Adding a rail means implementing one adapter — no protocol changes required.
+
+---
+
+## 8004 Integration
+
+Observer Protocol integrates with ERC-8004 (Base) and TRC-8004 (TRON) on-chain agent identity and reputation registries. This integration bridges OP's off-chain W3C DID/VC identity model with on-chain NFT-based agent registries.
+
+**What shipped:**
+
+- **Indexers for Base + TRON** — Real-time indexing of ERC-8004 Identity and Reputation NFT events on Base mainnet and TRC-8004 equivalents on TRON mainnet.
+- **Cross-registry identity resolution** — Resolve an agent's on-chain registry entry from a `did:web` DID, or resolve a DID from an on-chain NFT token ID. Bidirectional lookup across chains.
+- **Agent registration file pinning** — Pin agent registration metadata to IPFS via the 8004 registration flow, ensuring permanent availability of on-chain identity records.
+- **OP as validator on Base** — Observer Protocol operates as a validator node on the Base mainnet ERC-8004 registry, contributing to the decentralized validation of agent identity claims.
+- **appendResponse automation** — Built and tested but disabled until trigger criteria are finalized. When enabled, OP will automatically append signed verification responses to 8004 registry entries after successful chain verification.
+
+**Contract addresses:**
+
+| Chain | Contract | Address |
+|-------|----------|---------|
+| Base mainnet | Identity | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` |
+| Base mainnet | Reputation | `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63` |
+| TRON mainnet | Identity | `TFLvivMdKsk6v2GrwyD2apEr9dU1w7p7Fy` |
+| TRON mainnet | Reputation | `TFbvfLDa4eFqNR5vy24nTrhgZ74HmQ6yat` |
+| TRON mainnet | Validation | `TLCWcW8Qmo7QMNoAKfBhGYfGpHkw1krUEm` |
 
 ---
 
@@ -176,6 +203,33 @@ curl -X POST https://api.observerprotocol.org/v1/vac/extensions/attest \
   }'
 ```
 
+### ERC-8004 / TRC-8004
+
+```bash
+# Resolve an agent's on-chain registry entry from a DID
+curl https://api.observerprotocol.org/api/v1/erc8004/resolve/did/did:web:observerprotocol.org:agents:maxi-0001
+
+# Resolve a DID from an on-chain NFT token ID
+curl https://api.observerprotocol.org/api/v1/erc8004/resolve/nft/base/42
+
+# Get an agent's 8004 summary (identity + reputation across chains)
+curl https://api.observerprotocol.org/api/v1/erc8004/agent/agent_001/summary
+
+# Pin agent registration metadata
+curl -X POST https://api.observerprotocol.org/api/v1/erc8004/registration/pin \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id": "agent_001", "metadata": { ... }}'
+
+# Check indexer status (Base + TRON)
+curl https://api.observerprotocol.org/api/v1/erc8004/indexer/status
+
+# Trigger appendResponse (disabled until trigger criteria finalized)
+curl -X POST https://api.observerprotocol.org/api/v1/erc8004/trigger/append-response \
+  -H "Authorization: Bearer <api_key>" \
+  -d '{"agent_id": "agent_001", "verification_id": "..."}'
+```
+
 ### Credentials and attestations
 
 ```bash
@@ -240,8 +294,9 @@ observer-protocol/
 ├── rails/                        # Settlement rail implementations
 │   ├── x402/                     # x402 (USDC on Base) — dual verification + 8004 hooks
 │   ├── tron/                     # TRON mainnet (TRC-20 USDT)
-│   └── solana/                   # Solana (SOL + SPL tokens)
-├── migrations/                   # Database migrations (001–018)
+│   ├── solana/                   # Solana (SOL + SPL tokens)
+│   └── erc8004/                  # ERC-8004 / TRC-8004 on-chain registry integration
+├── migrations/                   # Database migrations (001–019)
 ├── DEPLOYMENT-LOG.md             # Production deployment history
 └── WHITEPAPER.md                 # Protocol vision (v1.0)
 ```
