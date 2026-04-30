@@ -4223,6 +4223,34 @@ def request_delegation(request: DelegationRequest):
         cursor.close()
         conn.close()
 
+@app.get("/observer/delegation-requests")
+def list_delegation_requests():
+    """List all delegation requests with agent details."""
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        cursor.execute("""
+            SELECT dr.request_id, dr.agent_id, dr.org_did, dr.requested_by,
+                   dr.status, dr.created_at,
+                   oa.agent_name, oa.alias
+            FROM delegation_requests dr
+            LEFT JOIN observer_agents oa ON dr.agent_id = oa.agent_id
+            ORDER BY dr.created_at DESC
+            LIMIT 50
+        """)
+        rows = cursor.fetchall()
+        requests = []
+        for r in rows:
+            req = dict(r)
+            if req.get("created_at"):
+                req["created_at"] = req["created_at"].isoformat()
+            requests.append(req)
+        return {"requests": requests, "count": len(requests)}
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @app.post("/observer/approve-delegation")
 def approve_delegation(request: DelegationApprovalRequest, raw_request: Request):
     """
