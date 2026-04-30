@@ -4251,6 +4251,38 @@ def list_delegation_requests():
         conn.close()
 
 
+class RevokeDelegationRequest(BaseModel):
+    request_id: str
+    reason: str = "Revoked via dashboard"
+
+@app.post("/observer/revoke-delegation")
+def revoke_delegation(req: RevokeDelegationRequest):
+    """Revoke a delegation request. Sets status to 'revoked' with reason."""
+    request_id = req.request_id
+    reason = req.reason
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            UPDATE delegation_requests
+            SET status = 'revoked'
+            WHERE request_id = %s AND status != 'revoked'
+        """, (request_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Delegation not found or already revoked")
+        conn.commit()
+        return {"revoked": True, "request_id": request_id, "reason": reason}
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @app.post("/observer/approve-delegation")
 def approve_delegation(request: DelegationApprovalRequest, raw_request: Request):
     """
