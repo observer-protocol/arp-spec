@@ -132,7 +132,10 @@ def call_lightningprox(
     }
 
     resp = httpx.post(LIGHTNINGPROX_URL, json=body, headers=headers, timeout=30)
-    return resp.json()
+    try:
+        return resp.json()
+    except Exception:
+        return {"response": resp.text, "status_code": resp.status_code}
 
 
 # ── Audit Log ────────────────────────────────────────────────
