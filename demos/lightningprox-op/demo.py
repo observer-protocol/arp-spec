@@ -29,7 +29,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 # ── Configuration ────────────────────────────────────────────
 
-LIGHTNINGPROX_URL = "https://lightningprox.com/api/ask_ai"
+LIGHTNINGPROX_URL = "https://lightningprox.com/v1/chat"
 LIGHTNINGPROX_TOKEN = os.environ.get("LIGHTNINGPROX_TOKEN", "")
 
 # Agent identity (Maxi — OP's reference agent)
@@ -122,13 +122,14 @@ def call_lightningprox(
     """
     headers = {
         "Content-Type": "application/json",
+        "X-Spend-Token": token,
         "X-Observer-Agent-DID": attestation["agent_did"],
         "X-Observer-Attestation": json.dumps(attestation, separators=(",", ":")),
     }
 
     body = {
-        "token": token,
-        "prompt": prompt,
+        "model": os.environ.get("LIGHTNINGPROX_MODEL", "mistral-small"),
+        "messages": [{"role": "user", "content": prompt}],
     }
 
     resp = httpx.post(LIGHTNINGPROX_URL, json=body, headers=headers, timeout=30)
@@ -142,6 +143,13 @@ def call_lightningprox(
 
 def log_to_audit(attestation: dict, response: dict, prompt: str):
     """Append the attestation + response to local audit log."""
+    # Extract response content for logging
+    resp_content = ""
+    if response.get("choices"):
+        resp_content = response["choices"][0].get("message", {}).get("content", "")
+    elif response.get("response"):
+        resp_content = response["response"]
+
     entry = {
         "timestamp": attestation["timestamp"],
         "attestation_id": attestation["id"],
@@ -149,8 +157,9 @@ def log_to_audit(attestation: dict, response: dict, prompt: str):
         "action": "ask_ai",
         "prompt_hash": attestation["prompt_hash"],
         "counterparty": attestation["counterparty"],
-        "response_status": "success" if response.get("response") else "error",
-        "response_length": len(response.get("response", "")),
+        "model": response.get("model", "unknown"),
+        "response_status": "success" if resp_content else "error",
+        "response_length": len(resp_content),
         "signature": attestation["proof"]["signature"][:32] + "...",
     }
     with open(AUDIT_LOG, "a") as f:
@@ -194,12 +203,21 @@ def main():
     print(f"[2] Calling LightningProx ask_ai...")
     response = call_lightningprox(prompt, LIGHTNINGPROX_TOKEN, attestation)
 
-    if response.get("response"):
-        print(f"    Response: {response['response'][:200]}{'...' if len(response.get('response','')) > 200 else ''}")
+    # Parse OpenAI-compatible response
+    content = ""
+    if response.get("choices"):
+        content = response["choices"][0].get("message", {}).get("content", "")
+    elif response.get("response"):
+        content = response["response"]
     elif response.get("error"):
-        print(f"    Error: {response['error']}")
+        content = f"Error: {response['error']}"
     else:
-        print(f"    Raw: {json.dumps(response)[:200]}")
+        content = json.dumps(response)[:300]
+
+    if content:
+        print(f"    Response: {content[:200]}{'...' if len(content) > 200 else ''}")
+    else:
+        print(f"    (empty response)")
     print()
 
     # Log to audit trail
