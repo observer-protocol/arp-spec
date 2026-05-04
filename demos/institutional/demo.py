@@ -413,7 +413,9 @@ def beat_7(config):
     print()
 
     # Settlement
-    settlement_tx = f"0x{hashlib.sha256(f'{fa["agent_id"]}{datetime.now().isoformat()}'.encode()).hexdigest()[:64]}"
+    agent_id = fa["agent_id"]
+    now_str = datetime.now().isoformat()
+    settlement_tx = "0x" + hashlib.sha256(f"{agent_id}{now_str}".encode()).hexdigest()[:64]
 
     print(f"  [Settlement executing on x402 / USDC on Base]")
     print(f"    Amount: ${int(tx['amount']):,} {tx['currency']}")
